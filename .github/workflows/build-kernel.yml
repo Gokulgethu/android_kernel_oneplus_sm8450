@@ -1,4 +1,4 @@
-name: Build Yazhu Kernel
+name: Build Yazhu Kernel (Flashable Zip)
 
 on:
   push:
@@ -23,17 +23,13 @@ on:
 env:
   KERNEL_NAME: yazhu
   DEVICE_CODENAME: udon
-  DEVICE_MODEL: OnePlus 11R (CPH2487)
+  DEVICE_MODEL: OnePlus 11R
   SOC: SM8475 (Snapdragon 8+ Gen 1)
 
 jobs:
   build:
-    name: Build Yazhu Kernel for ${{ matrix.variant }}
+    name: Build Flashable Kernel Zip
     runs-on: ubuntu-latest
-    strategy:
-      fail-fast: false
-      matrix:
-        variant: [sm8475, sm8450]
 
     steps:
       - name: Checkout kernel source
@@ -52,7 +48,6 @@ jobs:
 
       - name: Set up Clang/LLVM
         run: |
-          # Use Android's prebuilt clang for GKI builds
           mkdir -p toolchain
           cd toolchain
           
@@ -88,7 +83,7 @@ jobs:
       - name: Setup ccache
         uses: hendrikmuhs/ccache-action@v1.2
         with:
-          key: kernel-${{ matrix.variant }}
+          key: kernel-sm8450
           max-size: 2G
 
       - name: Get kernel version
@@ -153,97 +148,166 @@ jobs:
           echo "=== Build complete ==="
           ls -lah out/arch/arm64/boot/Image 2>/dev/null || echo "Image not found"
 
-      - name: Collect build artifacts
+      - name: Clone AnyKernel3
         run: |
-          mkdir -p artifacts
+          git clone https://github.com/osm0sis/AnyKernel3.git anykernel3
+          cd anykernel3
+          # Remove git history to reduce size
+          rm -rf .git
+          cd ..
+          echo "AnyKernel3 cloned successfully"
+
+      - name: Configure AnyKernel3 for OnePlus 11R
+        run: |
+          cd anykernel3
           
-          # Copy kernel image
-          cp out/arch/arm64/boot/Image artifacts/ 2>/dev/null || true
-          cp out/arch/arm64/boot/Image.gz artifacts/ 2>/dev/null || true
-          cp out/arch/arm64/boot/Image.lz4 artifacts/ 2>/dev/null || true
-          cp out/arch/arm64/boot/dtb artifacts/ 2>/dev/null || true
-          
-          # Copy DTBO if exists
-          find out/arch/arm64/boot/dts -name "*.dtbo" -exec cp {} artifacts/ \; 2>/dev/null || true
-          
-          # Copy DTB files
-          find out/arch/arm64/boot/dts/qcom -name "*.dtb" -exec cp {} artifacts/ \; 2>/dev/null || true
-          
-          # Collect kernel modules
-          mkdir -p artifacts/modules
-          find out -name "*.ko" -exec cp {} artifacts/modules/ \; 2>/dev/null || true
-          
-          # Count modules
-          MODULE_COUNT=$(find artifacts/modules -name "*.ko" 2>/dev/null | wc -l)
-          echo "Built ${MODULE_COUNT} kernel modules"
-          
-          # Copy .config for reference
-          cp out/.config artifacts/kernel.config 2>/dev/null || true
-          
-          # Create kernel info
-          cat > artifacts/kernel-info.txt << EOF
-          Kernel: Yazhu Kernel
-          Version: ${{ steps.version.outputs.version }}
-          Variant: ${{ matrix.variant }}
-          Device: ${{ env.DEVICE_MODEL }}
-          SoC: ${{ env.SOC }}
-          Compiler: $(clang --version | head -1)
-          Build Date: $(date -u)
-          KernelSU: Enabled
-          Modules: ${MODULE_COUNT}
+          # Create anykernel.sh configuration
+          cat > anykernel.sh << 'EOF'
+          # AnyKernel3 Ramdisk Mod Script
+          # osm0sis @ xda-developers
+
+          ## AnyKernel setup
+          # begin properties
+          properties() { '
+          kernel.string=yazhu-5.10.246 by Gokulgethu
+          do.devicecheck=1
+          do.modules=0
+          do.systemless=1
+          do.cleanup=1
+          do.cleanuponabort=0
+          device.name1=udon
+          device.name2=OP535DL1
+          device.name3=CPH2487
+          device.name4=CPH2423
+          supported.versions=
+          supported.patchlevels=
+          '; } # end properties
+
+          # shell variables
+          block=auto;
+          is_slot_device=1;
+          ramdisk_compression=auto;
+          patch_vbmeta_flag=auto;
+
+          ## AnyKernel methods (DO NOT CHANGE)
+          # import patching functions/variables - see for reference
+          . tools/ak3-core.sh;
+
+          ## AnyKernel file attributes
+          # set permissions/ownership for included ramdisk files
+          # set_perm_recursive 0 0 755 644 $ramdisk/*;
+          # set_perm_recursive 0 0 750 750 $ramdisk/init* $ramdisk/sbin;
+
+          ## AnyKernel boot install
+          dump_boot;
+
+          # begin ramdisk changes
+          # (no ramdisk changes needed for this kernel)
+          # end ramdisk changes
+
+          write_boot;
+          ## end boot install
+
           EOF
           
-          cat artifacts/kernel-info.txt
-          ls -lah artifacts/
+          echo "AnyKernel3 configured for OnePlus 11R (udon)"
 
-      - name: Upload kernel artifacts
+      - name: Copy kernel to AnyKernel3
+        run: |
+          # Copy kernel Image
+          cp out/arch/arm64/boot/Image anykernel3/ 2>/dev/null || true
+          cp out/arch/arm64/boot/Image.gz anykernel3/ 2>/dev/null || true
+          cp out/arch/arm64/boot/Image.lz4 anykernel3/ 2>/dev/null || true
+          
+          # Copy DTB if exists
+          cp out/arch/arm64/boot/dtb anykernel3/ 2>/dev/null || true
+          
+          # Copy DTBO if exists
+          find out/arch/arm64/boot/dts -name "*.dtbo" -exec cp {} anykernel3/ \; 2>/dev/null || true
+          find out/arch/arm64/boot/dts/qcom -name "*.dtb" -exec cp {} anykernel3/dtb \; 2>/dev/null || true
+          
+          echo "=== Files in AnyKernel3 ==="
+          ls -lah anykernel3/
+
+      - name: Create flashable zip
+        run: |
+          KERNEL_VERSION="${{ steps.version.outputs.version }}"
+          ZIP_NAME="yazhu-kernel-${KERNEL_VERSION}-udon-${{ github.run_number }}.zip"
+          
+          cd anykernel3
+          zip -r9 "../${ZIP_NAME}" . -x '*.git*' 'README.md'
+          cd ..
+          
+          echo "ZIP_NAME=${ZIP_NAME}" >> $GITHUB_ENV
+          echo ""
+          echo "=== Flashable zip created ==="
+          ls -lah "${ZIP_NAME}"
+          echo "Size: $(du -h "${ZIP_NAME}" | cut -f1)"
+
+      - name: Upload flashable zip
         uses: actions/upload-artifact@v4
         with:
-          name: yazhu-kernel-${{ matrix.variant }}-${{ steps.version.outputs.version }}
-          path: |
-            artifacts/Image
-            artifacts/Image.gz
-            artifacts/Image.lz4
-            artifacts/kernel-info.txt
-            artifacts/kernel.config
+          name: ${{ env.ZIP_NAME }}
+          path: ${{ env.ZIP_NAME }}
           retention-days: 30
 
-      - name: Upload kernel modules
+      - name: Upload kernel image
         uses: actions/upload-artifact@v4
         with:
-          name: yazhu-modules-${{ matrix.variant }}-${{ steps.version.outputs.version }}
-          path: artifacts/modules/
+          name: yazhu-kernel-image-${{ steps.version.outputs.version }}
+          path: |
+            out/arch/arm64/boot/Image
+            out/arch/arm64/boot/Image.gz
+            out/arch/arm64/boot/Image.lz4
           retention-days: 30
 
       - name: Create release
         if: github.event.inputs.release == 'true' && github.ref == 'refs/heads/main'
         uses: softprops/action-gh-release@v2
         with:
-          tag_name: yazhu-${{ steps.version.outputs.version }}-${{ matrix.variant }}-${{ github.run_number }}
-          name: "Yazhu Kernel ${{ steps.version.outputs.version }} (${{ matrix.variant }})"
+          tag_name: yazhu-${{ steps.version.outputs.version }}-${{ github.run_number }}
+          name: "Yazhu Kernel ${{ steps.version.outputs.version }} (Flashable Zip)"
           body: |
             ## 🐧 Yazhu Kernel ${{ steps.version.outputs.version }}
             
-            **Variant:** ${{ matrix.variant }}
-            **Device:** ${{ env.DEVICE_MODEL }}
+            **Device:** ${{ env.DEVICE_MODEL }} (${{ env.DEVICE_CODENAME }})
             **SoC:** ${{ env.SOC }}
             **KernelSU:** ✅ Integrated
             **Build Date:** ${{ github.event.head_commit.timestamp }}
             
-            ### Contents
-            - `Image` — Kernel image
-            - `modules/` — Kernel modules (.ko files)
+            ### 📦 Contents
+            - `${{ env.ZIP_NAME }}` — Flashable zip (AnyKernel3)
+            - `Image` — Raw kernel image
             
-            ### Flash Instructions
-            1. Extract the kernel Image
-            2. Use `mkbootimg` to create a boot image with the new kernel
-            3. Flash via fastboot: `fastboot flash boot boot.img`
+            ### ⚡ Flash Instructions
+            1. Download the flashable zip
+            2. Boot into recovery (TWRP/OrangeFox/PE Recovery)
+            3. Flash the zip
+            4. Reboot
             
-            ### KernelSU
+            **OR** via fastboot:
+            ```bash
+            # Extract Image from zip
+            # Create boot.img with mkbootimg
+            # Flash via: fastboot flash boot boot.img
+            ```
+            
+            ### 🔧 KernelSU
             Install the KernelSU Manager APK to manage root access.
+            
+            ### ✅ Compatibility
+            - OxygenOS (OOS)
+            - PixelOS
+            - LineageOS
+            - Any AOSP-based ROM
+            
+            ### ⚠️ Notes
+            - This is a kernel-only flash, no system modifications
+            - Works on A/B slot devices (OnePlus 11R)
+            - Preserves existing ramdisk and DTB from your ROM
           files: |
-            artifacts/Image
-            artifacts/Image.gz
+            ${{ env.ZIP_NAME }}
+            out/arch/arm64/boot/Image
           draft: false
           prerelease: false
         env:
@@ -257,9 +321,10 @@ jobs:
           echo "| Property | Value |" >> $GITHUB_STEP_SUMMARY
           echo "|----------|-------|" >> $GITHUB_STEP_SUMMARY
           echo "| Kernel | Yazhu ${{ steps.version.outputs.version }} |" >> $GITHUB_STEP_SUMMARY
-          echo "| Variant | ${{ matrix.variant }} |" >> $GITHUB_STEP_SUMMARY
-          echo "| Device | ${{ env.DEVICE_MODEL }} |" >> $GITHUB_STEP_SUMMARY
+          echo "| Device | ${{ env.DEVICE_MODEL }} (${{ env.DEVICE_CODENAME }}) |" >> $GITHUB_STEP_SUMMARY
+          echo "| SoC | ${{ env.SOC }} |" >> $GITHUB_STEP_SUMMARY
           echo "| KernelSU | ✅ Enabled |" >> $GITHUB_STEP_SUMMARY
+          echo "| Flashable Zip | ✅ ${{ env.ZIP_NAME }} |" >> $GITHUB_STEP_SUMMARY
           echo "| Status | ${{ job.status }} |" >> $GITHUB_STEP_SUMMARY
           echo "" >> $GITHUB_STEP_SUMMARY
           
