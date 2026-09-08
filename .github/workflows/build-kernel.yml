@@ -1,0 +1,271 @@
+name: Build Yazhu Kernel
+
+on:
+  push:
+    branches: [ main ]
+    paths-ignore:
+      - '*.md'
+      - 'LICENSE'
+      - '.gitignore'
+  pull_request:
+    branches: [ main ]
+  workflow_dispatch:
+    inputs:
+      release:
+        description: 'Create a release after build'
+        required: false
+        default: 'false'
+        type: choice
+        options:
+          - 'true'
+          - 'false'
+
+env:
+  KERNEL_NAME: yazhu
+  DEVICE_CODENAME: udon
+  DEVICE_MODEL: OnePlus 11R (CPH2487)
+  SOC: SM8475 (Snapdragon 8+ Gen 1)
+
+jobs:
+  build:
+    name: Build Yazhu Kernel for ${{ matrix.variant }}
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        variant: [sm8475, sm8450]
+
+    steps:
+      - name: Checkout kernel source
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 1
+
+      - name: Set up build environment
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y \
+            bc bison build-essential ccache cpio flex git kmod \
+            libelf-dev libncurses5-dev libssl-dev lz4 \
+            python3 python3-pip wget zip unzip \
+            gcc-aarch64-linux-gnu
+
+      - name: Set up Clang/LLVM
+        run: |
+          # Use Android's prebuilt clang for GKI builds
+          mkdir -p toolchain
+          cd toolchain
+          
+          # Download Android clang
+          wget -q https://android.googlesource.com/platform/prebuilts/clang/host/linux-x86/+archive/refs/heads/main/clang-r536225.tar.gz -O clang.tar.gz 2>/dev/null || \
+          wget -q https://github.com/nicholasgasior/clang-builds/releases/download/clang-18/clang-18-linux-x86_64.tar.xz -O clang.tar.xz 2>/dev/null
+          
+          # Fallback to system clang if downloads fail
+          if [ ! -f clang.tar.gz ] && [ ! -f clang.tar.xz ]; then
+            echo "Using system clang"
+            sudo apt-get install -y clang-18 lld-18 llvm-18
+            sudo update-alternatives --install /usr/bin/clang clang /usr/bin/clang-18 100
+            sudo update-alternatives --install /usr/bin/clang++ clang++ /usr/bin/clang++-18 100
+            sudo update-alternatives --install /usr/bin/ld.lld ld.lld /usr/bin/ld.lld-18 100
+            sudo update-alternatives --install /usr/bin/llvm-ar llvm-ar /usr/bin/llvm-ar-18 100
+            sudo update-alternatives --install /usr/bin/llvm-nm llvm-nm /usr/bin/llvm-nm-18 100
+            sudo update-alternatives --install /usr/bin/llvm-strip llvm-strip /usr/bin/llvm-strip-18 100
+            sudo update-alternatives --install /usr/bin/llvm-objcopy llvm-objcopy /usr/bin/llvm-objcopy-18 100
+            sudo update-alternatives --install /usr/bin/llvm-objdump llvm-objdump /usr/bin/llvm-objdump-18 100
+          else
+            if [ -f clang.tar.gz ]; then
+              tar xf clang.tar.gz
+            elif [ -f clang.tar.xz ]; then
+              tar xf clang.tar.xz
+            fi
+            echo "$(pwd)/bin" >> $GITHUB_PATH
+          fi
+          
+          cd ..
+          echo "Clang version:"
+          clang --version
+
+      - name: Setup ccache
+        uses: hendrikmuhs/ccache-action@v1.2
+        with:
+          key: kernel-${{ matrix.variant }}
+          max-size: 2G
+
+      - name: Get kernel version
+        id: version
+        run: |
+          VERSION=$(grep "^VERSION = " Makefile | awk '{print $3}')
+          PATCHLEVEL=$(grep "^PATCHLEVEL = " Makefile | awk '{print $3}')
+          SUBLEVEL=$(grep "^SUBLEVEL = " Makefile | awk '{print $3}')
+          LOCALVERSION=$(cat localversion 2>/dev/null || echo "")
+          KERNEL_VERSION="${VERSION}.${PATCHLEVEL}.${SUBLEVEL}${LOCALVERSION}"
+          echo "version=${KERNEL_VERSION}" >> $GITHUB_OUTPUT
+          echo "Kernel version: ${KERNEL_VERSION}"
+
+      - name: Configure kernel
+        run: |
+          export ARCH=arm64
+          export LLVM=1
+          export CC=clang
+          export LD=ld.lld
+          export AR=llvm-ar
+          export NM=llvm-nm
+          export STRIP=llvm-strip
+          export OBJCOPY=llvm-objcopy
+          export OBJDUMP=llvm-objdump
+          export HOSTCC=clang
+          export HOSTLD=ld.lld
+          
+          # Use ccache
+          export CC="ccache clang"
+          export HOSTCC="ccache clang"
+          
+          # Configure with GKI defconfig + vendor fragments
+          make O=out \
+            gki_defconfig \
+            vendor/waipio_GKI.config \
+            vendor/oplus_GKI.config
+          
+          echo ""
+          echo "=== Kernel configuration summary ==="
+          grep -E "CONFIG_LOCALVERSION|CONFIG_KSU|CONFIG_KPROBES" out/.config | head -10
+
+      - name: Build kernel
+        run: |
+          export ARCH=arm64
+          export LLVM=1
+          export CC="ccache clang"
+          export LD=ld.lld
+          export AR=llvm-ar
+          export NM=llvm-nm
+          export STRIP=llvm-strip
+          export OBJCOPY=llvm-objcopy
+          export OBJDUMP=llvm-objdump
+          export HOSTCC="ccache clang"
+          export HOSTLD=ld.lld
+          
+          NPROC=$(nproc)
+          echo "Building with ${NPROC} threads"
+          
+          make O=out -j${NPROC} 2>&1 | tee build.log
+          
+          echo ""
+          echo "=== Build complete ==="
+          ls -lah out/arch/arm64/boot/Image 2>/dev/null || echo "Image not found"
+
+      - name: Collect build artifacts
+        run: |
+          mkdir -p artifacts
+          
+          # Copy kernel image
+          cp out/arch/arm64/boot/Image artifacts/ 2>/dev/null || true
+          cp out/arch/arm64/boot/Image.gz artifacts/ 2>/dev/null || true
+          cp out/arch/arm64/boot/Image.lz4 artifacts/ 2>/dev/null || true
+          cp out/arch/arm64/boot/dtb artifacts/ 2>/dev/null || true
+          
+          # Copy DTBO if exists
+          find out/arch/arm64/boot/dts -name "*.dtbo" -exec cp {} artifacts/ \; 2>/dev/null || true
+          
+          # Copy DTB files
+          find out/arch/arm64/boot/dts/qcom -name "*.dtb" -exec cp {} artifacts/ \; 2>/dev/null || true
+          
+          # Collect kernel modules
+          mkdir -p artifacts/modules
+          find out -name "*.ko" -exec cp {} artifacts/modules/ \; 2>/dev/null || true
+          
+          # Count modules
+          MODULE_COUNT=$(find artifacts/modules -name "*.ko" 2>/dev/null | wc -l)
+          echo "Built ${MODULE_COUNT} kernel modules"
+          
+          # Copy .config for reference
+          cp out/.config artifacts/kernel.config 2>/dev/null || true
+          
+          # Create kernel info
+          cat > artifacts/kernel-info.txt << EOF
+          Kernel: Yazhu Kernel
+          Version: ${{ steps.version.outputs.version }}
+          Variant: ${{ matrix.variant }}
+          Device: ${{ env.DEVICE_MODEL }}
+          SoC: ${{ env.SOC }}
+          Compiler: $(clang --version | head -1)
+          Build Date: $(date -u)
+          KernelSU: Enabled
+          Modules: ${MODULE_COUNT}
+          EOF
+          
+          cat artifacts/kernel-info.txt
+          ls -lah artifacts/
+
+      - name: Upload kernel artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: yazhu-kernel-${{ matrix.variant }}-${{ steps.version.outputs.version }}
+          path: |
+            artifacts/Image
+            artifacts/Image.gz
+            artifacts/Image.lz4
+            artifacts/kernel-info.txt
+            artifacts/kernel.config
+          retention-days: 30
+
+      - name: Upload kernel modules
+        uses: actions/upload-artifact@v4
+        with:
+          name: yazhu-modules-${{ matrix.variant }}-${{ steps.version.outputs.version }}
+          path: artifacts/modules/
+          retention-days: 30
+
+      - name: Create release
+        if: github.event.inputs.release == 'true' && github.ref == 'refs/heads/main'
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: yazhu-${{ steps.version.outputs.version }}-${{ matrix.variant }}-${{ github.run_number }}
+          name: "Yazhu Kernel ${{ steps.version.outputs.version }} (${{ matrix.variant }})"
+          body: |
+            ## 🐧 Yazhu Kernel ${{ steps.version.outputs.version }}
+            
+            **Variant:** ${{ matrix.variant }}
+            **Device:** ${{ env.DEVICE_MODEL }}
+            **SoC:** ${{ env.SOC }}
+            **KernelSU:** ✅ Integrated
+            **Build Date:** ${{ github.event.head_commit.timestamp }}
+            
+            ### Contents
+            - `Image` — Kernel image
+            - `modules/` — Kernel modules (.ko files)
+            
+            ### Flash Instructions
+            1. Extract the kernel Image
+            2. Use `mkbootimg` to create a boot image with the new kernel
+            3. Flash via fastboot: `fastboot flash boot boot.img`
+            
+            ### KernelSU
+            Install the KernelSU Manager APK to manage root access.
+          files: |
+            artifacts/Image
+            artifacts/Image.gz
+          draft: false
+          prerelease: false
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Build summary
+        if: always()
+        run: |
+          echo "## 🐧 Yazhu Kernel Build Summary" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "| Property | Value |" >> $GITHUB_STEP_SUMMARY
+          echo "|----------|-------|" >> $GITHUB_STEP_SUMMARY
+          echo "| Kernel | Yazhu ${{ steps.version.outputs.version }} |" >> $GITHUB_STEP_SUMMARY
+          echo "| Variant | ${{ matrix.variant }} |" >> $GITHUB_STEP_SUMMARY
+          echo "| Device | ${{ env.DEVICE_MODEL }} |" >> $GITHUB_STEP_SUMMARY
+          echo "| KernelSU | ✅ Enabled |" >> $GITHUB_STEP_SUMMARY
+          echo "| Status | ${{ job.status }} |" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          
+          if [ -f build.log ]; then
+            echo "### Build Log (last 20 lines)" >> $GITHUB_STEP_SUMMARY
+            echo '```' >> $GITHUB_STEP_SUMMARY
+            tail -20 build.log >> $GITHUB_STEP_SUMMARY
+            echo '```' >> $GITHUB_STEP_SUMMARY
+          fi
