@@ -41,20 +41,13 @@ jobs:
       - name: Set up build environment
         run: |
           sudo apt-get update
-          sudo apt-get install -y \
-            bc bison build-essential ccache cpio flex git kmod \
-            libelf-dev libncurses5-dev libssl-dev lz4 \
-            python3 python3-pip wget zip unzip \
-            gcc-aarch64-linux-gnu
+          sudo apt-get install -y bc bison build-essential ccache cpio flex git kmod libelf-dev libncurses5-dev libssl-dev lz4 python3 python3-pip wget zip unzip gcc-aarch64-linux-gnu
 
       - name: Set up Clang/LLVM
         run: |
-          mkdir -p toolchain
-          cd toolchain
-          wget -q https://android.googlesource.com/platform/prebuilts/clang/host/linux-x86/+archive/refs/heads/main/clang-r536225.tar.gz -O clang.tar.gz 2>/dev/null || \
-          wget -q https://github.com/nicholasgasior/clang-builds/releases/download/clang-18/clang-18-linux-x86_64.tar.xz -O clang.tar.xz 2>/dev/null
+          mkdir -p toolchain && cd toolchain
+          wget -q https://android.googlesource.com/platform/prebuilts/clang/host/linux-x86/+archive/refs/heads/main/clang-r536225.tar.gz -O clang.tar.gz 2>/dev/null || wget -q https://github.com/nicholasgasior/clang-builds/releases/download/clang-18/clang-18-linux-x86_64.tar.xz -O clang.tar.xz 2>/dev/null
           if [ ! -f clang.tar.gz ] && [ ! -f clang.tar.xz ]; then
-            echo "Using system clang"
             sudo apt-get install -y clang-18 lld-18 llvm-18
             sudo update-alternatives --install /usr/bin/clang clang /usr/bin/clang-18 100
             sudo update-alternatives --install /usr/bin/clang++ clang++ /usr/bin/clang++-18 100
@@ -65,11 +58,10 @@ jobs:
             sudo update-alternatives --install /usr/bin/llvm-objcopy llvm-objcopy /usr/bin/llvm-objcopy-18 100
             sudo update-alternatives --install /usr/bin/llvm-objdump llvm-objdump /usr/bin/llvm-objdump-18 100
           else
-            if [ -f clang.tar.gz ]; then tar xf clang.tar.gz; elif [ -f clang.tar.xz ]; then tar xf clang.tar.xz; fi
+            [ -f clang.tar.gz ] && tar xf clang.tar.gz || tar xf clang.tar.xz
             echo "$(pwd)/bin" >> $GITHUB_PATH
           fi
-          cd ..
-          clang --version
+          cd .. && clang --version
 
       - name: Setup ccache
         uses: hendrikmuhs/ccache-action@v1.2
@@ -77,298 +69,98 @@ jobs:
           key: kernel-sm8450
           max-size: 2G
 
-      # ========================================
-      # FIX 1: Replace KernelSU with stable v1.0.5
-      # v1.0.5 has kernel_compat.c for 5.10 support
-      # ========================================
-      - name: Install KernelSU ${{ env.KSU_VERSION_TAG }} (stable for 5.10)
+      - name: Install KernelSU v1.0.5 (stable for 5.10)
         run: |
-          echo "=== Replacing KernelSU with stable ${{ env.KSU_VERSION_TAG }} ==="
-          
-          # Backup current KernelSU for reference
-          if [ -d drivers/kernelsu ]; then
-            echo "Current KernelSU files:"
-            find drivers/kernelsu -type f | wc -l
-          fi
-          
-          # Clone KernelSU v1.0.5
-          git clone --depth 1 --branch ${{ env.KSU_VERSION_TAG }} \
-            https://github.com/tiann/KernelSU.git /tmp/kernelsu-stable
-          
-          # Remove old KernelSU from drivers/
-          rm -rf drivers/kernelsu
-          
-          # Copy v1.0.5 kernel/ to drivers/kernelsu/
-          cp -r /tmp/kernelsu-stable/kernel drivers/kernelsu
-          
-          # Clean up non-essential files
-          rm -rf drivers/kernelsu/.vscode drivers/kernelsu/.clangd* \
-                 drivers/kernelsu/.gitignore drivers/kernelsu/build-all*.sh \
-                 drivers/kernelsu/setup.sh
-          
-          # Verify
-          echo "=== KernelSU v1.0.5 installed ==="
-          echo "Files: $(find drivers/kernelsu -type f | wc -l)"
-          echo "Has kernel_compat.c: $(test -f drivers/kernelsu/kernel_compat.c && echo YES || echo NO)"
-          echo "Has Kconfig: $(test -f drivers/kernelsu/Kconfig && echo YES || echo NO)"
-          echo "Has Makefile: $(test -f drivers/kernelsu/Makefile && echo YES || echo NO)"
-          ls drivers/kernelsu/*.c drivers/kernelsu/*.h 2>/dev/null
-          
-          # Clean up
-          rm -rf /tmp/kernelsu-stable
+          echo "=== Installing KernelSU ${{ env.KSU_VERSION_TAG }} ==="
+          [ -d drivers/kernelsu ] && echo "Old KSU files: $(find drivers/kernelsu -type f | wc -l)" && rm -rf drivers/kernelsu
+          git clone --depth 1 --branch ${{ env.KSU_VERSION_TAG }} https://github.com/tiann/KernelSU.git /tmp/ksu
+          cp -r /tmp/ksu/kernel drivers/kernelsu
+          rm -rf drivers/kernelsu/.vscode drivers/kernelsu/.clangd* drivers/kernelsu/.gitignore drivers/kernelsu/build-all*.sh drivers/kernelsu/setup.sh
+          echo "KernelSU v1.0.5 installed: $(find drivers/kernelsu -type f | wc -l) files"
+          test -f drivers/kernelsu/kernel_compat.c && echo "kernel_compat.c: OK"
+          test -f drivers/kernelsu/Kconfig && echo "Kconfig: OK"
+          test -f drivers/kernelsu/Makefile && echo "Makefile: OK"
+          rm -rf /tmp/ksu
 
-      # ========================================
-      # FIX 2: Ensure drivers/Kconfig and Makefile reference kernelsu
-      # ========================================
-      - name: Verify kernel build system integration
+      - name: Verify build system integration
         run: |
-          echo "=== Checking drivers/Makefile for kernelsu ==="
-          grep "kernelsu" drivers/Makefile || {
-            echo 'obj-$(CONFIG_KSU) += kernelsu/' >> drivers/Makefile
-            echo "Added kernelsu to drivers/Makefile"
-          }
-          
-          echo "=== Checking drivers/Kconfig for kernelsu ==="
-          grep "kernelsu" drivers/Kconfig || {
-            echo 'source "drivers/kernelsu/Kconfig"' >> drivers/Kconfig
-            echo "Added kernelsu to drivers/Kconfig"
-          }
+          grep -q "kernelsu" drivers/Makefile || echo 'obj-$(CONFIG_KSU) += kernelsu/' >> drivers/Makefile
+          grep -q "kernelsu" drivers/Kconfig || echo 'source "drivers/kernelsu/Kconfig"' >> drivers/Kconfig
+          echo "drivers/Makefile: $(grep kernelsu drivers/Makefile)"
+          echo "drivers/Kconfig: $(grep kernelsu drivers/Kconfig)"
 
       - name: Get kernel version
         id: version
         run: |
-          VERSION=$(grep "^VERSION = " Makefile | awk '{print $3}')
-          PATCHLEVEL=$(grep "^PATCHLEVEL = " Makefile | awk '{print $3}')
-          SUBLEVEL=$(grep "^SUBLEVEL = " Makefile | awk '{print $3}')
-          LOCALVERSION=$(cat localversion 2>/dev/null || echo "")
-          KERNEL_VERSION="${VERSION}.${PATCHLEVEL}.${SUBLEVEL}${LOCALVERSION}"
-          echo "version=${KERNEL_VERSION}" >> $GITHUB_OUTPUT
-          echo "Kernel version: ${KERNEL_VERSION}"
+          V=$(grep "^VERSION = " Makefile | awk '{print $3}')
+          P=$(grep "^PATCHLEVEL = " Makefile | awk '{print $3}')
+          S=$(grep "^SUBLEVEL = " Makefile | awk '{print $3}')
+          LV=$(cat localversion 2>/dev/null || echo "")
+          KV="${V}.${P}.${S}${LV}"
+          echo "version=${KV}" >> $GITHUB_OUTPUT
+          echo "Kernel version: ${KV}"
 
-      # ========================================
-      # FIX 3: Configure with boot safety fragment
-      # ========================================
       - name: Configure kernel (with safety configs)
         run: |
-          export ARCH=arm64
-          export LLVM=1
-          export CC=clang
-          export LD=ld.lld
-          export AR=llvm-ar
-          export NM=llvm-nm
-          export STRIP=llvm-strip
-          export OBJCOPY=llvm-objcopy
-          export OBJDUMP=llvm-objdump
-          export HOSTCC=clang
-          export HOSTLD=ld.lld
-          export CC="ccache clang"
-          export HOSTCC="ccache clang"
-          
-          # Configure with all config fragments:
-          # 1. gki_defconfig - base GKI config
-          # 2. waipio_GKI.config - SM8475 SoC drivers
-          # 3. oplus_GKI.config - OnePlus hardware drivers
-          # 4. boot_safety.config - ABI compat & boot safety
-          make O=out \
-            gki_defconfig \
-            vendor/waipio_GKI.config \
-            vendor/oplus_GKI.config \
-            vendor/boot_safety.config
-          
-          echo ""
-          echo "=== Critical config verification ==="
-          echo "MODVERSIONS: $(grep CONFIG_MODVERSIONS out/.config | head -1)"
-          echo "KALLSYMS: $(grep CONFIG_KALLSYMS= out/.config | head -1)"
-          echo "MODULE_SIG: $(grep CONFIG_MODULE_SIG out/.config | head -1)"
-          echo "OVERLAY_FS: $(grep CONFIG_OVERLAY_FS out/.config | head -1)"
-          echo "KPROBES: $(grep CONFIG_KPROBES= out/.config | head -1)"
-          echo "KSU: $(grep CONFIG_KSU out/.config | head -1)"
-          echo "SELINUX: $(grep CONFIG_SECURITY_SELINUX= out/.config | head -1)"
-          echo "LOCALVERSION: $(grep CONFIG_LOCALVERSION out/.config | head -1)"
-          echo "MODULES: $(grep CONFIG_MODULES= out/.config | head -1)"
+          export ARCH=arm64 LLVM=1 CC="ccache clang" LD=ld.lld AR=llvm-ar NM=llvm-nm
+          export STRIP=llvm-strip OBJCOPY=llvm-objcopy OBJDUMP=llvm-objdump HOSTCC="ccache clang" HOSTLD=ld.lld
+          make O=out gki_defconfig vendor/waipio_GKI.config vendor/oplus_GKI.config vendor/boot_safety.config
+          echo "=== Critical configs ==="
+          grep -E "CONFIG_(MODVERSIONS|KALLSYMS=|MODULES=|OVERLAY_FS|KPROBES=|KSU|SELINUX=|MODULE_SIG)" out/.config | head -15
 
       - name: Build kernel
         run: |
-          export ARCH=arm64
-          export LLVM=1
-          export CC="ccache clang"
-          export LD=ld.lld
-          export AR=llvm-ar
-          export NM=llvm-nm
-          export STRIP=llvm-strip
-          export OBJCOPY=llvm-objcopy
-          export OBJDUMP=llvm-objdump
-          export HOSTCC="ccache clang"
-          export HOSTLD=ld.lld
-          
-          NPROC=$(nproc)
-          echo "Building with ${NPROC} threads"
-          
-          make O=out -j${NPROC} 2>&1 | tee build.log
-          BUILD_EXIT=$?
-          
-          echo ""
-          echo "=== Build exit code: ${BUILD_EXIT} ==="
-          
-          # Verify kernel image was produced
+          export ARCH=arm64 LLVM=1 CC="ccache clang" LD=ld.lld AR=llvm-ar NM=llvm-nm
+          export STRIP=llvm-strip OBJCOPY=llvm-objcopy OBJDUMP=llvm-objdump HOSTCC="ccache clang" HOSTLD=ld.lld
+          make O=out -j$(nproc) 2>&1 | tee build.log
           if [ ! -f out/arch/arm64/boot/Image ]; then
-            echo "::error::Kernel Image not found! Build may have failed."
-            echo "Last 50 lines of build log:"
+            echo "::error::Kernel Image not found!"
             tail -50 build.log
             exit 1
           fi
-          
-          echo "Kernel Image: $(ls -lah out/arch/arm64/boot/Image)"
-          echo "Kernel version string: $(strings out/arch/arm64/boot/Image | grep 'Linux version' | head -1)"
+          echo "Image: $(ls -lah out/arch/arm64/boot/Image)"
+          strings out/arch/arm64/boot/Image | grep "Linux version" | head -1
 
-      # ========================================
-      # FIX 4: Improved AnyKernel3 with safety features
-      # ========================================
       - name: Clone AnyKernel3
         run: |
           git clone https://github.com/osm0sis/AnyKernel3.git anykernel3
-          cd anykernel3
-          rm -rf .git
+          rm -rf anykernel3/.git
 
-      - name: Configure AnyKernel3 (with safety features)
+      - name: Configure AnyKernel3
         run: |
-          cat > anykernel3/anykernel.sh << 'AK3EOF'
-# AnyKernel3 Ramdisk Mod Script
-# osm0sis @ xda-developers
-# Modified for Yazhu Kernel - OnePlus 11R (udon)
-
-## AnyKernel setup
-# begin properties
-properties() { '
-kernel.string=yazhu by Gokulgethu
-do.devicecheck=1
-do.modules=0
-do.systemless=1
-do.cleanup=1
-do.cleanuponabort=1
-device.name1=udon
-device.name2=OP535DL1
-device.name3=CPH2487
-device.name4=CPH2423
-device.name5=OnePlus 11R
-supported.versions=
-supported.patchlevels=
-'; } # end properties
-
-# shell variables
-block=auto;
-is_slot_device=1;
-ramdisk_compression=auto;
-patch_vbmeta_flag=auto;
-
-## AnyKernel methods (DO NOT CHANGE)
-# import patching functions/variables - see for reference
-. tools/ak3-core.sh;
-
-## AnyKernel install
-dump_boot;
-
-# begin ramdisk changes
-# Backup the original kernel version for reference
-if [ -f $ramdisk/init ]; then
-  ui_print "   Preserving original ramdisk from your ROM";
-fi;
-# end ramdisk changes
-
-write_boot;
-## end install
-
-## AnyKernel reset
-# Reset boot image back to stock if flash fails
-reset_boot() {
-  ui_print " ";
-  ui_print "   *** FLASH FAILED - Restoring backup ***";
-  ui_print "   Your original boot image has been restored.";
-  ui_print "   The device should boot normally.";
-};
-AK3EOF
-          
-          echo "AnyKernel3 configured with safety features"
+          cp anykernel_udon.sh anykernel3/anykernel.sh
+          echo "AnyKernel3 configured from repo file"
+          cat anykernel3/anykernel.sh | head -5
 
       - name: Copy kernel to AnyKernel3
         run: |
-          # Copy kernel Image (the primary image for SM8475)
           cp out/arch/arm64/boot/Image anykernel3/
-          
-          # Copy compressed variants if they exist
           cp out/arch/arm64/boot/Image.gz anykernel3/ 2>/dev/null || true
           cp out/arch/arm64/boot/Image.lz4 anykernel3/ 2>/dev/null || true
-          
-          # Copy DTB if exists (for boot image v2+)
           cp out/arch/arm64/boot/dtb anykernel3/ 2>/dev/null || true
-          
-          # Copy DTBO if exists
           find out/arch/arm64/boot/dts -name "*.dtbo" -exec cp {} anykernel3/ \; 2>/dev/null || true
-          
-          echo "=== AnyKernel3 contents ==="
           ls -lah anykernel3/Image* anykernel3/dtb* 2>/dev/null
 
       - name: Create flashable zip
         run: |
-          KERNEL_VERSION="${{ steps.version.outputs.version }}"
-          ZIP_NAME="yazhu-kernel-${KERNEL_VERSION}-udon-${{ github.run_number }}.zip"
-          
-          cd anykernel3
-          zip -r9 "../${ZIP_NAME}" . -x '*.git*' 'README.md' '.github/*'
-          cd ..
-          
-          echo "ZIP_NAME=${ZIP_NAME}" >> $GITHUB_ENV
-          
-          # Validate zip structure
-          echo ""
-          echo "=== Flashable zip created ==="
-          ls -lah "${ZIP_NAME}"
-          echo "Size: $(du -h "${ZIP_NAME}" | cut -f1)"
-          echo ""
-          echo "=== Zip contents ==="
-          unzip -l "${ZIP_NAME}" | head -30
+          KV="${{ steps.version.outputs.version }}"
+          ZIP="yazhu-kernel-${KV}-udon-${{ github.run_number }}.zip"
+          cd anykernel3 && zip -r9 "../${ZIP}" . -x '*.git*' 'README.md' '.github/*' && cd ..
+          echo "ZIP_NAME=${ZIP}" >> $GITHUB_ENV
+          echo "Zip: $(du -h ${ZIP} | cut -f1)"
+          unzip -l "${ZIP}" | head -20
 
-      # ========================================
-      # FIX 5: Build validation
-      # ========================================
       - name: Validate build output
         run: |
           echo "=== Build Validation ==="
-          
-          # 1. Check Image exists and is valid
-          echo "1. Kernel Image:"
-          file out/arch/arm64/boot/Image
-          ls -lah out/arch/arm64/boot/Image
-          
-          # 2. Check kernel version string
-          echo ""
-          echo "2. Kernel version string:"
-          strings out/arch/arm64/boot/Image | grep "Linux version" | head -1
-          
-          # 3. Check KernelSU is compiled in
-          echo ""
-          echo "3. KernelSU integration:"
-          strings out/arch/arm64/boot/Image | grep -i "kernelsu\|ksu" | head -5 || echo "  (KSU symbols may be stripped, checking config)"
-          grep CONFIG_KSU out/.config
-          
-          # 4. Check critical configs
-          echo ""
-          echo "4. Boot-critical configs:"
-          grep -E "CONFIG_(MODVERSIONS|KALLSYMS|MODULES|OVERLAY_FS|SELINUX|EXT4)" out/.config | grep "=y" | head -10
-          
-          # 5. Check zip is valid
-          echo ""
-          echo "5. Flashable zip:"
-          unzip -t "${ZIP_NAME}" | tail -3
-          
-          # 6. Module count
-          echo ""
-          echo "6. Kernel modules:"
-          MODULE_COUNT=$(find out -name "*.ko" 2>/dev/null | wc -l)
-          echo "  Built ${MODULE_COUNT} kernel modules"
-          
-          echo ""
-          echo "=== Validation PASSED ==="
+          echo "1. Image:" && file out/arch/arm64/boot/Image
+          echo "2. Version:" && strings out/arch/arm64/boot/Image | grep "Linux version" | head -1
+          echo "3. KSU:" && grep CONFIG_KSU out/.config
+          echo "4. Safety configs:"
+          grep -E "CONFIG_(MODVERSIONS|KALLSYMS=|MODULE_SIG)" out/.config | grep -v "^#"
+          echo "5. Zip:" && unzip -t "${ZIP_NAME}" | tail -3
+          echo "6. Modules: $(find out -name '*.ko' | wc -l) .ko files"
+          echo "=== PASSED ==="
 
       - name: Upload flashable zip
         uses: actions/upload-artifact@v4
@@ -392,38 +184,15 @@ AK3EOF
         uses: softprops/action-gh-release@v2
         with:
           tag_name: yazhu-${{ steps.version.outputs.version }}-${{ github.run_number }}
-          name: "Yazhu Kernel ${{ steps.version.outputs.version }} (Flashable Zip)"
+          name: "Yazhu Kernel ${{ steps.version.outputs.version }}"
           body: |
-            ## Yazhu Kernel ${{ steps.version.outputs.version }}
-            
-            **Device:** ${{ env.DEVICE_MODEL }} (${{ env.DEVICE_CODENAME }})
-            **SoC:** ${{ env.SOC }} (Snapdragon 8+ Gen 1)
-            **KernelSU:** ${{ env.KSU_VERSION_TAG }} (stable)
-            **Build Date:** ${{ github.event.head_commit.timestamp }}
-            
-            ### Safety Features
-            - CONFIG_MODVERSIONS enabled (tolerant module loading)
-            - CONFIG_MODULE_SIG disabled (OPlus vendor module compat)
-            - Boot safety config fragment applied
-            - AnyKernel3 preserves existing ramdisk + DTB
-            
-            ### Compatibility
-            - OxygenOS (OOS)
-            - PixelOS / LineageOS / RisingOS
-            - Any AOSP-based ROM for OnePlus 11R
-            
-            ### Flash Instructions
-            1. Download the flashable zip
-            2. Boot into TWRP/OrangeFox recovery
-            3. Flash the zip
-            4. Reboot
-            5. Install KernelSU Manager APK for root
-            
-            ### Recovery
-            If bootloop occurs:
-            ```
-            fastboot flash boot stock_boot.img
-            ```
+            Yazhu Kernel ${{ steps.version.outputs.version }}
+            Device: ${{ env.DEVICE_MODEL }} (${{ env.DEVICE_CODENAME }})
+            KernelSU: ${{ env.KSU_VERSION_TAG }} (stable)
+            Boot Safety: MODVERSIONS + MODULE_SIG=n + safety config applied
+            Compatible with: OxygenOS, PixelOS, LineageOS, any AOSP ROM
+            Flash via TWRP/OrangeFox recovery. KernelSU Manager APK needed for root.
+            Recovery if bootloop: fastboot flash boot stock_boot.img
           files: |
             ${{ env.ZIP_NAME }}
             out/arch/arm64/boot/Image
@@ -435,20 +204,10 @@ AK3EOF
       - name: Build summary
         if: always()
         run: |
-          echo "## Yazhu Kernel Build Summary" >> $GITHUB_STEP_SUMMARY
-          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "## Yazhu Kernel Build" >> $GITHUB_STEP_SUMMARY
           echo "| Property | Value |" >> $GITHUB_STEP_SUMMARY
-          echo "|----------|-------|" >> $GITHUB_STEP_SUMMARY
-          echo "| Kernel | Yazhu ${{ steps.version.outputs.version }} |" >> $GITHUB_STEP_SUMMARY
-          echo "| Device | ${{ env.DEVICE_MODEL }} (${{ env.DEVICE_CODENAME }}) |" >> $GITHUB_STEP_SUMMARY
-          echo "| KernelSU | ${{ env.KSU_VERSION_TAG }} (stable) |" >> $GITHUB_STEP_SUMMARY
-          echo "| Boot Safety | Config fragment applied |" >> $GITHUB_STEP_SUMMARY
-          echo "| Flashable Zip | ${{ env.ZIP_NAME }} |" >> $GITHUB_STEP_SUMMARY
+          echo "|---|---|" >> $GITHUB_STEP_SUMMARY
+          echo "| Version | ${{ steps.version.outputs.version }} |" >> $GITHUB_STEP_SUMMARY
+          echo "| KernelSU | ${{ env.KSU_VERSION_TAG }} |" >> $GITHUB_STEP_SUMMARY
           echo "| Status | ${{ job.status }} |" >> $GITHUB_STEP_SUMMARY
-          echo "" >> $GITHUB_STEP_SUMMARY
-          if [ -f build.log ]; then
-            echo "### Build Log (last 30 lines)" >> $GITHUB_STEP_SUMMARY
-            echo '```' >> $GITHUB_STEP_SUMMARY
-            tail -30 build.log >> $GITHUB_STEP_SUMMARY
-            echo '```' >> $GITHUB_STEP_SUMMARY
-          fi
+          [ -f build.log ] && echo '```' >> $GITHUB_STEP_SUMMARY && tail -30 build.log >> $GITHUB_STEP_SUMMARY && echo '```' >> $GITHUB_STEP_SUMMARY
