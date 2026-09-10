@@ -127,7 +127,7 @@ jobs:
           EOF
           export ARCH=arm64 LLVM=1 LLVM_IAS=1
           export PATH="$HOME/toolchain/bin:$PATH"
-          make O=out ${DEFCONFIGS} arch/arm64/configs/vendor/ci_slim.config
+          make O=out ${DEFCONFIGS} vendor/ci_slim.config
           echo "=== key configs ==="
           grep -E "^CONFIG_(MODVERSIONS|MODULES|KPROBES|KSU|OVERLAY_FS|MODULE_SIG)" out/.config || true
 
