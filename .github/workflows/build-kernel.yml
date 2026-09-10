@@ -186,14 +186,15 @@ jobs:
           export ARCH=arm64 LLVM=1 LLVM_IAS=1
           export PATH="$HOME/toolchain/bin:$PATH"
           ROOT=$PWD
-          FAIL=0
+          MODS=$(realpath $ROOT/../sm8450-modules)
+          set -o pipefail
           for m in ${EXT_MODULES}; do
             echo "=== ext module: $m ==="
-            if ! make O=$ROOT/out M=$ROOT/kernel/oneplus/sm8450-modules/$m -j$(nproc) modules 2>&1 | tail -3; then
-              echo "::error::ext module failed: $m"; FAIL=1
+            test -f "$MODS/$m/Makefile" || { echo "::error::Makefile not found: $MODS/$m"; ls "$MODS" "$MODS/qcom" 2>/dev/null; exit 1; }
+            if ! make O=$ROOT/out M=$MODS/$m -j$(nproc) modules 2>&1 | tail -60; then
+              echo "::error::ext module failed: $m"; exit 1
             fi
           done
-          exit $FAIL
 
       - name: Collect modules (vendor_boot ramdisk + vendor_dlkm sets)
         working-directory: kernel/oneplus/sm8450
