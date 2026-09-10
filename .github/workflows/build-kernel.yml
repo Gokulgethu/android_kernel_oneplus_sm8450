@@ -66,7 +66,7 @@ jobs:
           git clone --depth=1 https://github.com/pjgowtham/android_kernel_oneplus_sm8450-modules kernel/oneplus/sm8450-modules
           # verify the boot-critical symlink resolves
           test -f kernel/oneplus/sm8450/arch/arm64/boot/dts/vendor/Makefile || { echo "::error::dts/vendor symlink broken"; exit 1; }
-          echo "udon DTs via symlink: $(find kernel/oneplus/sm8450/arch/arm64/boot/dts/vendor -name 'udon*' | wc -l)"
+          echo "oplus board overlays via symlink: $(find kernel/oneplus/sm8450/arch/arm64/boot/dts/vendor -iname '*overlay*' | wc -l)"
 
       - name: Set up build environment
         run: |
@@ -101,9 +101,16 @@ jobs:
           print("merge_dtbs.py patched: ufdt non-fatal, collision-uniquify")
           PY
 
+      - name: Restore toolchain cache
+        uses: actions/cache@v4
+        with:
+          path: ~/toolchain
+          key: clang-r487747c-yazhu
+
       - name: Set up Clang (r487747c — AOSP kernel toolchain) + ccache
         run: |
           mkdir -p $HOME/toolchain && cd $HOME/toolchain
+          if [ -x bin/clang ]; then echo "toolchain cached"; exit 0; fi
           curl -sL "https://android.googlesource.com/platform/prebuilts/clang/host/linux-x86/+archive/refs/heads/main-kernel-build-2023/clang-r487747c.tar.gz" -o clang.tar.gz
           tar tzf clang.tar.gz >/dev/null 2>&1 || { echo "clang tarball corrupt"; exit 1; }
           tar xf clang.tar.gz
@@ -184,7 +191,8 @@ jobs:
       - name: Collect modules (vendor_boot ramdisk + vendor_dlkm sets)
         working-directory: kernel/oneplus/sm8450
         run: |
-          K=$PWD; OUT=$K/out; MODS=$K/kernel/oneplus/sm8450-modules
+          K=$PWD; OUT=$K/out; MODS=$(realpath $K/../sm8450-modules)
+          echo "ext-module tree: $MODS"
           # strip debug info from all built modules
           find $OUT $MODS -name '*.ko' -exec $HOME/toolchain/bin/llvm-strip --strip-debug {} \; 2>/dev/null || true
           mkdir -p akmods/vendor_ramdisk/lib/modules akmods/vendor_dlkm/lib/modules
@@ -233,7 +241,7 @@ jobs:
           curl -sL "https://android.googlesource.com/platform/system/libufdt/+/refs/heads/main/utils/src/mkdtboimg.py?format=TEXT" | base64 -d > /tmp/mkdtboimg.py
           python3 /tmp/mkdtboimg.py create dtbo.img --page_size=4096 $(find dtb-out -type f -name '*.dtbo' | sort)
           cat $(find dtb-out -type f -name '*.dtb' | sort) > dtb.img
-          echo "dtbo entries: $(python3 /tmp/mkdtboimg.py print dtbo.img | grep -c 'Block\|entry' || true)"
+          python3 /tmp/mkdtboimg.py dump dtbo.img | grep -E "dt_entry_count|dt_size" | head -4
           ls -la dtbo.img dtb.img
 
       - name: Assemble AnyKernel3 zip (Image + dtb + dtbo + modules)
