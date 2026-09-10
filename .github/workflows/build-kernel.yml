@@ -1,4 +1,4 @@
-name: Build Yazhu Kernel (Flashable Zip)
+name: Build udon Kernel (Universal Flashable — Image + DTBO + Modules)
 
 on:
   push:
@@ -14,7 +14,7 @@ on:
       release:
         description: 'Create a release after build'
         required: false
-        default: 'false'
+        default: 'true'
         type: choice
         options:
           - 'true'
@@ -24,143 +24,221 @@ env:
   KERNEL_NAME: yazhu
   DEVICE_CODENAME: udon
   DEVICE_MODEL: OnePlus 11R
-  SOC: SM8475
+  SOC: SM8450 (taro)
   KSU_VERSION_TAG: v1.0.5
+  ARCH: arm64
+  # rocko5498 proven config set (matches device tree exactly)
+  DEFCONFIGS: "gki_defconfig vendor/waipio_GKI.config vendor/oplus_GKI.config vendor/debugfs.config vendor/boot_safety.config"
+  # rocko5498 proven ext-module set (sm8450-common BoardConfigCommon)
+  EXT_MODULES: |
+    qcom/opensource/mmrm-driver
+    qcom/opensource/audio-kernel
+    qcom/opensource/camera-kernel
+    qcom/opensource/dataipa/drivers/platform/msm
+    qcom/opensource/datarmnet/core
+    qcom/opensource/datarmnet-ext/aps
+    qcom/opensource/datarmnet-ext/offload
+    qcom/opensource/datarmnet-ext/shs
+    qcom/opensource/datarmnet-ext/perf
+    qcom/opensource/datarmnet-ext/perf_tether
+    qcom/opensource/datarmnet-ext/sch
+    qcom/opensource/datarmnet-ext/wlan
+    qcom/opensource/display-drivers/msm
+    qcom/opensource/eva-kernel
+    qcom/opensource/video-driver
+    qcom/opensource/wlan/qcacld-3.0/.qca6490
 
 jobs:
   build:
-    name: Build Flashable Kernel Zip
+    name: Build kernel + modules + DTBO + AnyKernel3 zip
     runs-on: ubuntu-latest
 
     steps:
-      - name: Checkout kernel source
+      - name: Checkout kernel source (at kernel/oneplus/sm8450 so the dts/vendor symlink resolves)
         uses: actions/checkout@v4
         with:
           fetch-depth: 1
+          path: kernel/oneplus/sm8450
+
+      - name: Checkout device devicetrees + kernel modules (symlink targets)
+        run: |
+          git clone --depth=1 https://github.com/rocko5498/android_kernel_oneplus_sm8450-devicetrees kernel/oneplus/sm8450-devicetrees
+          git clone --depth=1 https://github.com/pjgowtham/android_kernel_oneplus_sm8450-modules kernel/oneplus/sm8450-modules
+          # verify the boot-critical symlink resolves
+          test -f kernel/oneplus/sm8450/arch/arm64/boot/dts/vendor/Makefile || { echo "::error::dts/vendor symlink broken"; exit 1; }
+          echo "udon DTs via symlink: $(find kernel/oneplus/sm8450/arch/arm64/boot/dts/vendor -name 'udon*' | wc -l)"
 
       - name: Set up build environment
         run: |
           sudo apt-get update
-          sudo apt-get install -y bc bison build-essential ccache cpio flex git kmod libelf-dev libncurses5-dev libssl-dev lz4 python3 python3-pip wget zip unzip gcc-aarch64-linux-gnu
+          sudo apt-get install -y bc bison cpio flex git kmod libelf-dev libssl-dev lz4 zip unzip \
+            device-tree-compiler python3-dev python3-pip lld llvm
+          sudo apt-get clean
 
-      - name: Set up Clang/LLVM
+      - name: Set up Clang (r536225) + ccache
         run: |
-          mkdir -p toolchain && cd toolchain
-          wget -q https://android.googlesource.com/platform/prebuilts/clang/host/linux-x86/+archive/refs/heads/main/clang-r536225.tar.gz -O clang.tar.gz 2>/dev/null || wget -q https://github.com/nicholasgasior/clang-builds/releases/download/clang-18/clang-18-linux-x86_64.tar.xz -O clang.tar.xz 2>/dev/null
-          if [ ! -f clang.tar.gz ] && [ ! -f clang.tar.xz ]; then
-            sudo apt-get install -y clang-18 lld-18 llvm-18
-            sudo update-alternatives --install /usr/bin/clang clang /usr/bin/clang-18 100
-            sudo update-alternatives --install /usr/bin/clang++ clang++ /usr/bin/clang++-18 100
-            sudo update-alternatives --install /usr/bin/ld.lld ld.lld /usr/bin/ld.lld-18 100
-            sudo update-alternatives --install /usr/bin/llvm-ar llvm-ar /usr/bin/llvm-ar-18 100
-            sudo update-alternatives --install /usr/bin/llvm-nm llvm-nm /usr/bin/llvm-nm-18 100
-            sudo update-alternatives --install /usr/bin/llvm-strip llvm-strip /usr/bin/llvm-strip-18 100
-            sudo update-alternatives --install /usr/bin/llvm-objcopy llvm-objcopy /usr/bin/llvm-objcopy-18 100
-            sudo update-alternatives --install /usr/bin/llvm-objdump llvm-objdump /usr/bin/llvm-objdump-18 100
-          else
-            [ -f clang.tar.gz ] && tar xf clang.tar.gz || tar xf clang.tar.xz
-            echo "$(pwd)/bin" >> $GITHUB_PATH
+          mkdir -p $HOME/toolchain && cd $HOME/toolchain
+          curl -sL "https://android.googlesource.com/platform/prebuilts/clang/host/linux-x86/+archive/refs/heads/main-kernel-build-2023/clang-r536225.tar.gz" -o clang.tar.gz
+          if ! tar xf clang.tar.gz 2>/dev/null; then
+            curl -sL https://android.googlesource.com/platform/prebuilts/clang/host/linux-x86/+archive/refs/heads/main/clang-r536225.tar.gz -o clang.tar.gz
+            tar xf clang.tar.gz
           fi
-          cd .. && clang --version
+          echo "$HOME/toolchain/bin" >> $GITHUB_PATH
+          $HOME/toolchain/bin/clang --version | head -1
 
-      - name: Setup ccache
-        uses: hendrikmuhs/ccache-action@v1.2
-        with:
-          key: kernel-sm8450
-          max-size: 2G
-
-      - name: Install KernelSU v1.0.5 (stable for 5.10)
+      - name: Install KernelSU v1.0.5
         run: |
-          echo "=== Installing KernelSU ${{ env.KSU_VERSION_TAG }} ==="
-          [ -d drivers/kernelsu ] && echo "Old KSU files: $(find drivers/kernelsu -type f | wc -l)" && rm -rf drivers/kernelsu
+          cd kernel/oneplus/sm8450
+          rm -rf drivers/kernelsu
           git clone --depth 1 --branch ${{ env.KSU_VERSION_TAG }} https://github.com/tiann/KernelSU.git /tmp/ksu
           cp -r /tmp/ksu/kernel drivers/kernelsu
-          rm -rf drivers/kernelsu/.vscode drivers/kernelsu/.clangd* drivers/kernelsu/.gitignore drivers/kernelsu/build-all*.sh drivers/kernelsu/setup.sh
-          echo "KernelSU v1.0.5 installed: $(find drivers/kernelsu -type f | wc -l) files"
-          test -f drivers/kernelsu/kernel_compat.c && echo "kernel_compat.c: OK"
-          test -f drivers/kernelsu/Kconfig && echo "Kconfig: OK"
-          test -f drivers/kernelsu/Makefile && echo "Makefile: OK"
-          rm -rf /tmp/ksu
-
-      - name: Verify build system integration
-        run: |
+          rm -rf drivers/kernelsu/.vscode drivers/kernelsu/.clangd* drivers/kernelsu/build-all*.sh
           grep -q "kernelsu" drivers/Makefile || echo 'obj-$(CONFIG_KSU) += kernelsu/' >> drivers/Makefile
           grep -q "kernelsu" drivers/Kconfig || echo 'source "drivers/kernelsu/Kconfig"' >> drivers/Kconfig
-          echo "drivers/Makefile: $(grep kernelsu drivers/Makefile)"
-          echo "drivers/Kconfig: $(grep kernelsu drivers/Kconfig)"
+          echo "KSU files: $(find drivers/kernelsu -type f | wc -l)"
 
-      - name: Get kernel version
+      - name: Kernel version
         id: version
         run: |
+          cd kernel/oneplus/sm8450
           V=$(grep "^VERSION = " Makefile | awk '{print $3}')
           P=$(grep "^PATCHLEVEL = " Makefile | awk '{print $3}')
           S=$(grep "^SUBLEVEL = " Makefile | awk '{print $3}')
-          LV=$(cat localversion 2>/dev/null || echo "")
-          KV="${V}.${P}.${S}${LV}"
-          echo "version=${KV}" >> $GITHUB_OUTPUT
-          echo "Kernel version: ${KV}"
+          echo "version=${V}.${P}.${S}" >> $GITHUB_OUTPUT
+          echo "Building kernel ${V}.${P}.${S}"
 
-      - name: Configure kernel (with safety configs)
+      - name: make defconfig (proven set + CI slimming)
+        working-directory: kernel/oneplus/sm8450
         run: |
-          export ARCH=arm64 LLVM=1 CC="ccache clang" LD=ld.lld AR=llvm-ar NM=llvm-nm
-          export STRIP=llvm-strip OBJCOPY=llvm-objcopy OBJDUMP=llvm-objdump HOSTCC="ccache clang" HOSTLD=ld.lld
-          make O=out gki_defconfig vendor/waipio_GKI.config vendor/oplus_GKI.config vendor/boot_safety.config
-          echo "=== Critical configs ==="
-          grep -E "CONFIG_(MODVERSIONS|KALLSYMS=|MODULES=|OVERLAY_FS|KPROBES=|KSU|SELINUX=|MODULE_SIG)" out/.config | head -15
+          # CI-only fragment: no debug info (smaller/faster; no ABI impact)
+          cat > arch/arm64/configs/vendor/ci_slim.config <<'EOF'
+          CONFIG_DEBUG_INFO_NONE=y
+          # CONFIG_DEBUG_INFO is not set
+          EOF
+          export ARCH=arm64 LLVM=1 LLVM_IAS=1
+          export PATH="$HOME/toolchain/bin:$PATH"
+          make O=out ${DEFCONFIGS} arch/arm64/configs/vendor/ci_slim.config
+          echo "=== key configs ==="
+          grep -E "^CONFIG_(MODVERSIONS|MODULES|KPROBES|KSU|OVERLAY_FS|MODULE_SIG)" out/.config || true
 
-      - name: Build kernel
+      - name: Build kernel Image + DTBs
+        working-directory: kernel/oneplus/sm8450
         run: |
-          export ARCH=arm64 LLVM=1 CC="ccache clang" LD=ld.lld AR=llvm-ar NM=llvm-nm
-          export STRIP=llvm-strip OBJCOPY=llvm-objcopy OBJDUMP=llvm-objdump HOSTCC="ccache clang" HOSTLD=ld.lld
-          make O=out -j$(nproc) 2>&1 | tee build.log
-          if [ ! -f out/arch/arm64/boot/Image ]; then
-            echo "::error::Kernel Image not found!"
-            tail -50 build.log
-            exit 1
-          fi
-          echo "Image: $(ls -lah out/arch/arm64/boot/Image)"
-          strings out/arch/arm64/boot/Image | grep "Linux version" | head -1
+          export ARCH=arm64 LLVM=1 LLVM_IAS=1
+          export PATH="$HOME/toolchain/bin:$PATH"
+          make O=out -j$(nproc) Image dtbs 2>&1 | tail -25
+          test -f out/arch/arm64/boot/Image || { echo "::error::Image missing"; exit 1; }
+          file out/arch/arm64/boot/Image
+          V=$(make O=out ARCH=arm64 LLVM=1 kernelrelease 2>/dev/null | tail -1)
+          echo "kernelrelease=${V}" >> $GITHUB_ENV
+          echo "release: $V"
 
-      - name: Clone AnyKernel3
+      - name: Build in-tree modules
+        working-directory: kernel/oneplus/sm8450
         run: |
-          git clone https://github.com/osm0sis/AnyKernel3.git anykernel3
-          rm -rf anykernel3/.git
+          export ARCH=arm64 LLVM=1 LLVM_IAS=1
+          export PATH="$HOME/toolchain/bin:$PATH"
+          make O=out -j$(nproc) modules 2>&1 | tail -10
+          echo "in-tree .ko: $(find out -name '*.ko' | wc -l)"
 
-      - name: Configure AnyKernel3
+      - name: Build qcom ext modules (16 proven modules)
+        working-directory: kernel/oneplus/sm8450
         run: |
-          cp anykernel_udon.sh anykernel3/anykernel.sh
-          echo "AnyKernel3 configured from repo file"
-          cat anykernel3/anykernel.sh | head -5
+          export ARCH=arm64 LLVM=1 LLVM_IAS=1
+          export PATH="$HOME/toolchain/bin:$PATH"
+          ROOT=$PWD
+          FAIL=0
+          for m in ${EXT_MODULES}; do
+            echo "=== ext module: $m ==="
+            if ! make O=$ROOT/out M=$ROOT/kernel/oneplus/sm8450-modules/$m -j$(nproc) modules 2>&1 | tail -3; then
+              echo "::error::ext module failed: $m"; FAIL=1
+            fi
+          done
+          exit $FAIL
 
-      - name: Copy kernel to AnyKernel3
+      - name: Collect modules (vendor_boot ramdisk + vendor_dlkm sets)
+        working-directory: kernel/oneplus/sm8450
         run: |
-          cp out/arch/arm64/boot/Image anykernel3/
-          cp out/arch/arm64/boot/Image.gz anykernel3/ 2>/dev/null || true
-          cp out/arch/arm64/boot/Image.lz4 anykernel3/ 2>/dev/null || true
-          cp out/arch/arm64/boot/dtb anykernel3/ 2>/dev/null || true
-          find out/arch/arm64/boot/dts -name "*.dtbo" -exec cp {} anykernel3/ \; 2>/dev/null || true
-          ls -lah anykernel3/Image* anykernel3/dtb* 2>/dev/null
+          K=$PWD; OUT=$K/out; MODS=$K/kernel/oneplus/sm8450-modules
+          # strip debug info from all built modules
+          find $OUT $MODS -name '*.ko' -exec $HOME/toolchain/bin/llvm-strip --strip-debug {} \; 2>/dev/null || true
+          mkdir -p akmods/vendor_ramdisk/lib/modules akmods/vendor_dlkm/lib/modules
+          # index all built .ko by basename
+          find $OUT $MODS -name '*.ko' | while read ko; do echo "$(basename $ko)|$ko"; done > /tmp/ko_index.txt
+          pick() { # $1=list file, $2=dest
+            while read m; do
+              hit=$(grep "^$m|" /tmp/ko_index.txt | head -1 | cut -d'|' -f2)
+              if [ -n "$hit" ]; then cp "$hit" "$2/"; else echo "  [warn] not built (maybe =y): $m"; fi
+            done < "$1"
+          }
+          curl -sL https://raw.githubusercontent.com/rocko5498/android_device_oneplus_sm8450-common/2ff212ddace121b374e63eb956817422c953f339/modules.load.vendor_boot -o /tmp/load.vendor_boot
+          curl -sL https://raw.githubusercontent.com/rocko5498/android_device_oneplus_sm8450-common/2ff212ddace121b374e63eb956817422c953f339/modules.load -o /tmp/load.dlkm
+          pick /tmp/load.vendor_boot akmods/vendor_ramdisk/lib/modules
+          pick /tmp/load.dlkm akmods/vendor_dlkm/lib/modules
+          # blocklist (kernel source root, rocko proven)
+          cp modules.vendor_blocklist.msm.waipio akmods/vendor_dlkm/lib/modules/modules.blocklist 2>/dev/null || echo "no blocklist file"
+          # load lists for the overlay
+          cp /tmp/load.dlkm akmods/vendor_dlkm/lib/modules/modules.load
+          echo "vendor_ramdisk modules: $(ls akmods/vendor_ramdisk/lib/modules/*.ko 2>/dev/null | wc -l)"
+          echo "vendor_dlkm modules:    $(ls akmods/vendor_dlkm/lib/modules/*.ko 2>/dev/null | wc -l)"
 
-      - name: Create flashable zip
+      - name: Free disk (Image preserved, out/ removed before second build tree)
+        working-directory: kernel/oneplus/sm8450
         run: |
-          KV="${{ steps.version.outputs.version }}"
-          ZIP="yazhu-kernel-${KV}-udon-${{ github.run_number }}.zip"
-          cd anykernel3 && zip -r9 "../${ZIP}" . -x '*.git*' 'README.md' '.github/*' && cd ..
+          cp out/arch/arm64/boot/Image "$GITHUB_WORKSPACE/kernel/oneplus/sm8450/Image.final"
+          rm -rf out
+          df -h / | tail -1
+
+      - name: Build DTB/DTBO images (qcom merge_dtbs flow)
+        working-directory: kernel/oneplus/sm8450
+        run: |
+          export ARCH=arm64 LLVM=1 LLVM_IAS=1
+          export PATH="$HOME/toolchain/bin:$PATH"
+          # fresh DTB output tree (mirrors Lineage kernel.mk)
+          make O=out-dtb ${DEFCONFIGS} > /dev/null
+          make O=out-dtb -j$(nproc) dtbs > /dev/null 2>&1
+          DTS=out-dtb/arch/arm64/boot/dts
+          mkdir -p dtb-base dtb-out
+          find $DTS -type f -name '*.dtb' | xargs rm -f
+          mv $DTS/vendor/*/*.dtb $DTS/vendor/*/*.dtbo dtb-base/ 2>/dev/null || true
+          curl -sL https://raw.githubusercontent.com/LineageOS/android_vendor_lineage/lineage-23.2/build/tools/merge_dtbs.py -o /tmp/merge_dtbs.py
+          python3 /tmp/merge_dtbs.py --base dtb-base --techpack $DTS/vendor --out dtb-out
+          # fetch AOSP mkdtboimg.py
+          curl -sL "https://android.googlesource.com/platform/system/libufdt/+/refs/heads/main/utils/src/mkdtboimg.py?format=TEXT" | base64 -d > /tmp/mkdtboimg.py
+          python3 /tmp/mkdtboimg.py create dtbo.img --page_size=4096 $(find dtb-out -type f -name '*.dtbo' | sort)
+          cat $(find dtb-out -type f -name '*.dtb' | sort) > dtb.img
+          echo "dtbo entries: $(python3 /tmp/mkdtboimg.py print dtbo.img | grep -c 'Block\|entry' || true)"
+          ls -la dtbo.img dtb.img
+
+      - name: Assemble AnyKernel3 zip (Image + dtb + dtbo + modules)
+        run: |
+          K=$PWD/kernel/oneplus/sm8450
+          git clone --depth=1 https://github.com/osm0sis/AnyKernel3.git ak3
+          rm -rf ak3/.git ak3/.github
+          cp $K/anykernel_udon.sh ak3/anykernel.sh
+          cp $K/Image.final ak3/Image
+          cp $K/dtb.img ak3/dtb
+          cp $K/dtbo.img ak3/dtbo.img
+          # modules: systemless vendor_dlkm overlay + vendor_boot ramdisk patch
+          mkdir -p ak3/modules/vendor_dlkm/lib/modules
+          cp -r $K/akmods/vendor_dlkm/lib/modules/. ak3/modules/vendor_dlkm/lib/modules/
+          mkdir -p ak3/vendor_ramdisk/lib/modules
+          cp -r $K/akmods/vendor_ramdisk/lib/modules/. ak3/vendor_ramdisk/lib/modules/
+          V="${{ steps.version.outputs.version }}"
+          ZIP="yazhu-kernel-${V}-udon-$(date +%Y%m%d)-${{ github.run_number }}.zip"
+          cd ak3 && zip -r9 "../${ZIP}" . -x '*.git*' > /dev/null && cd ..
           echo "ZIP_NAME=${ZIP}" >> $GITHUB_ENV
-          echo "Zip: $(du -h ${ZIP} | cut -f1)"
-          unzip -l "${ZIP}" | head -20
+          echo "=== zip contents (top) ==="
+          unzip -l "${ZIP}" | head -18
+          echo "modules in zip: $(unzip -l "${ZIP}" | grep -c '\.ko')"
 
-      - name: Validate build output
+      - name: Validate
         run: |
-          echo "=== Build Validation ==="
-          echo "1. Image:" && file out/arch/arm64/boot/Image
-          echo "2. Version:" && strings out/arch/arm64/boot/Image | grep "Linux version" | head -1
-          echo "3. KSU:" && grep CONFIG_KSU out/.config
-          echo "4. Safety configs:"
-          grep -E "CONFIG_(MODVERSIONS|KALLSYMS=|MODULE_SIG)" out/.config | grep -v "^#"
-          echo "5. Zip:" && unzip -t "${ZIP_NAME}" | tail -3
-          echo "6. Modules: $(find out -name '*.ko' | wc -l) .ko files"
-          echo "=== PASSED ==="
+          test -f "${ZIP_NAME}" || { echo "::error::no zip"; exit 1; }
+          unzip -t "${ZIP_NAME}" > /dev/null && echo "zip integrity OK"
+          unzip -l "${ZIP_NAME}" | grep -q "dtbo.img" || { echo "::error::dtbo.img missing from zip"; exit 1; }
+          unzip -l "${ZIP_NAME}" | grep -q "vendor_ramdisk" || echo "::warning::no vendor_ramdisk modules"
+          echo "FINAL: ${ZIP_NAME} ($(du -h ${ZIP_NAME} | cut -f1))"
 
       - name: Upload flashable zip
         uses: actions/upload-artifact@v4
@@ -169,45 +247,32 @@ jobs:
           path: ${{ env.ZIP_NAME }}
           retention-days: 30
 
-      - name: Upload kernel image
-        uses: actions/upload-artifact@v4
-        with:
-          name: yazhu-kernel-image-${{ steps.version.outputs.version }}
-          path: |
-            out/arch/arm64/boot/Image
-            out/arch/arm64/boot/Image.gz
-            out/arch/arm64/boot/Image.lz4
-          retention-days: 30
-
       - name: Create release
         if: github.event.inputs.release == 'true' && github.ref == 'refs/heads/main'
         uses: softprops/action-gh-release@v2
         with:
           tag_name: yazhu-${{ steps.version.outputs.version }}-${{ github.run_number }}
-          name: "Yazhu Kernel ${{ steps.version.outputs.version }}"
+          name: "Yazhu Kernel ${{ steps.version.outputs.version }} (udon)"
           body: |
-            Yazhu Kernel ${{ steps.version.outputs.version }}
-            Device: ${{ env.DEVICE_MODEL }} (${{ env.DEVICE_CODENAME }})
-            KernelSU: ${{ env.KSU_VERSION_TAG }} (stable)
-            Boot Safety: MODVERSIONS + MODULE_SIG=n + safety config applied
-            Compatible with: OxygenOS, PixelOS, LineageOS, any AOSP ROM
-            Flash via TWRP/OrangeFox recovery. KernelSU Manager APK needed for root.
-            Recovery if bootloop: fastboot flash boot stock_boot.img
+            Universal flashable kernel for OnePlus 11R (udon/CPH2487)
+            - KernelSU ${{ env.KSU_VERSION_TAG }} (builtin)
+            - Includes matching kernel modules (vendor_dlkm systemless overlay + vendor_boot ramdisk)
+            - Includes dtbo.img (flashed automatically)
+            - Compatible: PixelOS / LineageOS / crDroid / Evo / any AOSP 16 + OxygenOS 16.x
+            - Flash via TWRP/OrangeFox/custom recovery
+            - Base: rocko5498 proven sm8450 stack, LTS 5.10.246
+            - Revert: reflash your ROM's boot or `fastboot flash boot stock_boot.img`
           files: |
             ${{ env.ZIP_NAME }}
-            out/arch/arm64/boot/Image
           draft: false
           prerelease: false
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
-      - name: Build summary
+      - name: Summary
         if: always()
         run: |
-          echo "## Yazhu Kernel Build" >> $GITHUB_STEP_SUMMARY
-          echo "| Property | Value |" >> $GITHUB_STEP_SUMMARY
-          echo "|---|---|" >> $GITHUB_STEP_SUMMARY
-          echo "| Version | ${{ steps.version.outputs.version }} |" >> $GITHUB_STEP_SUMMARY
-          echo "| KernelSU | ${{ env.KSU_VERSION_TAG }} |" >> $GITHUB_STEP_SUMMARY
-          echo "| Status | ${{ job.status }} |" >> $GITHUB_STEP_SUMMARY
-          [ -f build.log ] && echo '```' >> $GITHUB_STEP_SUMMARY && tail -30 build.log >> $GITHUB_STEP_SUMMARY && echo '```' >> $GITHUB_STEP_SUMMARY
+          echo "## udon kernel build" >> $GITHUB_STEP_SUMMARY
+          echo "| version | ${{ steps.version.outputs.version }} |" >> $GITHUB_STEP_SUMMARY
+          echo "| zip | ${ZIP_NAME:-none} |" >> $GITHUB_STEP_SUMMARY
+          echo "| status | ${{ job.status }} |" >> $GITHUB_STEP_SUMMARY
