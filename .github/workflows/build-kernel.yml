@@ -289,8 +289,25 @@ jobs:
           test -f "${ZIP_NAME}" || { echo "::error::no zip"; exit 1; }
           unzip -t "${ZIP_NAME}" > /dev/null && echo "zip integrity OK"
           unzip -l "${ZIP_NAME}" | grep -q "dtbo.img" || { echo "::error::dtbo.img missing from zip"; exit 1; }
-          unzip -l "${ZIP_NAME}" | grep -q "vendor_ramdisk" || echo "::warning::no vendor_ramdisk modules"
-          echo "FINAL: ${ZIP_NAME} ($(du -h ${ZIP_NAME} | cut -f1))"
+          # module count assertions (rocko-proven sets)
+          VB=$(unzip -l "${ZIP_NAME}" | grep -c 'vendor_ramdisk/lib/modules/.*\.ko' || true)
+          VD=$(unzip -l "${ZIP_NAME}" | grep -c 'modules/vendor_dlkm/lib/modules/.*\.ko' || true)
+          echo "modules: vendor_boot=${VB} vendor_dlkm=${VD}"
+          [ "${VB}" -eq 104 ] || echo "::warning::vendor_boot modules=${VB} (expected 104)"
+          [ "${VD}" -eq 297 ] || { echo "::error::vendor_dlkm modules=${VD} (expected 297)"; exit 1; }
+          # vermagic consistency: kernel release string must match module vermagic
+          KREL=$(unzip -p "${ZIP_NAME}" Image | strings | grep -m1 -oE '5\.10\.[0-9]+-[A-Za-z0-9.\-]*dirty')
+          echo "kernel release: ${KREL}"
+          [ -n "${KREL}" ] || { echo "::error::no release string in Image"; exit 1; }
+          M=$(unzip -Z "${ZIP_NAME}" | grep 'vendor_ramdisk/lib/modules/.*\.ko' | head -1)
+          unzip -p "${ZIP_NAME}" "${M}" | strings | grep -q "vermagic=${KREL} " || { echo "::error::vermagic mismatch vs ${KREL}"; exit 1; }
+          M2=$(unzip -Z "${ZIP_NAME}" | grep 'modules/vendor_dlkm/lib/modules/.*\.ko' | head -1)
+          unzip -p "${ZIP_NAME}" "${M2}" | strings | grep -q "vermagic=${KREL} " || { echo "::error::dlkm vermagic mismatch"; exit 1; }
+          # device targeting: udon board must be present in the merged dtbo
+          unzip -p "${ZIP_NAME}" dtbo.img | grep -aq "Cape MTP, Udon" || { echo "::error::udon board missing from dtbo"; exit 1; }
+          # KernelSU must be compiled in
+          unzip -p "${ZIP_NAME}" Image | grep -qa "kernelsu" || { echo "::error::KernelSU not found in Image"; exit 1; }
+          echo "FINAL: ${ZIP_NAME} ($(du -h ${ZIP_NAME} | cut -f1)) — all validation gates passed"
 
       - name: Upload flashable zip
         uses: actions/upload-artifact@v4
@@ -328,3 +345,9 @@ jobs:
           echo "| version | ${{ steps.version.outputs.version }} |" >> $GITHUB_STEP_SUMMARY
           echo "| zip | ${ZIP_NAME:-none} |" >> $GITHUB_STEP_SUMMARY
           echo "| status | ${{ job.status }} |" >> $GITHUB_STEP_SUMMARY
+          K=$(git -C kernel/oneplus/sm8450 rev-parse HEAD 2>/dev/null || echo n/a)
+          MO=$(git -C kernel/oneplus/sm8450-modules rev-parse HEAD 2>/dev/null || echo n/a)
+          DT=$(git -C kernel/oneplus/sm8450-devicetrees rev-parse HEAD 2>/dev/null || echo n/a)
+          echo "| kernel | ${K} |" >> $GITHUB_STEP_SUMMARY
+          echo "| modules | ${MO} |" >> $GITHUB_STEP_SUMMARY
+          echo "| devicetrees | ${DT} |" >> $GITHUB_STEP_SUMMARY

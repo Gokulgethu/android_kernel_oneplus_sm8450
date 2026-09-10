@@ -1,8 +1,8 @@
 # AnyKernel3 Ramdisk Mod Script
 # osm0sis @ xda-developers
-# yazhu kernel v2 — OnePlus 11R (udon / CPH2487)
+# yazhu kernel v3 — OnePlus 11R (udon / CPH2487)
 # Ships: kernel Image (boot) + dtb (vendor_boot) + dtbo.img (dtbo)
-#        + vendor_boot ramdisk modules + vendor_dlkm modules (systemless KSU module)
+#        + vendor_boot ramdisk modules + vendor_dlkm modules (ak3-helper systemless module)
 
 ## AnyKernel setup
 # begin properties
@@ -31,35 +31,29 @@ patch_vbmeta_flag=auto;
 . tools/ak3-core.sh;
 
 ## AnyKernel install
-# write_boot flashes: boot (Image) + dtbo (dtbo.img) and, with dtb + vendor_ramdisk
-# present at zip root (hdr v4 auto-setup), vendor_boot (dtb + ramdisk module overwrite).
+# Pre-flash safety: back up the images being replaced (one-time; existing backups never
+# overwritten). Restore with fastboot flash boot|vendor_boot|dtbo <img> if needed.
+BACKUP_DIR=/data/media/0/yazhu_backup;
+mkdir -p $BACKUP_DIR;
+for PART in boot vendor_boot dtbo; do
+  SRC=/dev/block/by-name/${PART}${SLOT};
+  [ -e "$SRC" ] || SRC=/dev/block/bootdevice/by-name/${PART}${SLOT};
+  DST=$BACKUP_DIR/${PART}${SLOT}.img;
+  if [ -e "$SRC" ] && [ ! -f "$DST" ]; then
+    dd if=$SRC of=$DST bs=4194304 2>/dev/null && ui_print "   backed up ${PART}${SLOT} to /sdcard/yazhu_backup";
+  fi;
+done;
+
 dump_boot;
 
-write_boot;   # flashes boot (Image), vendor_boot (dtb + ramdisk modules) and dtbo (dtbo.img)
+# flashes boot (Image) + vendor_boot (dtb + ramdisk modules) + dtbo (dtbo.img);
+# vendor_dlkm/system_dlkm/dtbo are auto-flashed only if present at zip root
+write_boot;
 
-## vendor_dlkm modules -> systemless KernelSU/Magisk module
-# vendor_dlkm is EROFS (read-only) so modules are overlaid; overlay applies at
-# post-fs-data, before vendor modprobe runs. Auto-removed if kernel is reflashed.
-if [ "$DO_MODULES" == 1 ] && [ -d "$HOME/modules/vendor_dlkm" ]; then
-  ui_print "   Installing vendor_dlkm modules (systemless)";
-  MODDIR=/data/adb/modules/udon_yazhu_kmod;
-  rm -rf $MODDIR;
-  mkdir -p $MODDIR/system/vendor_dlkm/lib/modules;
-  cp -rf $HOME/modules/vendor_dlkm/. $MODDIR/system/vendor_dlkm/lib/modules/;
-  KO=$(ls $MODDIR/system/vendor_dlkm/lib/modules/*.ko 2>/dev/null | head -1);
-  KV=$(strings "$KO" 2>/dev/null | grep -m1 "Linux version [0-9]*\.[0-9]*\.[0-9]*" | cut -d' ' -f3);
-  [ -n "$KV" ] || KV="5.10.246";
-  cat > $MODDIR/module.prop <<MEOF
-id=udon_yazhu_kmod
-name=yazhu kernel modules (udon)
-version=${KV:-5.10.246}
-versionCode=$(date +%Y%m%d)
-author=Gokulgethu
-description=Kernel-matched vendor_dlkm modules for the yazhu kernel. Installed by AnyKernel3; safe to remove after flashing a different kernel.
-MEOF
-  set_perm_recursive $MODDIR 0 0 755 644;
-  ui_print "   modules: $(ls $MODDIR/system/vendor_dlkm/lib/modules/*.ko 2>/dev/null | wc -l) installed systemless";
-fi
-
+# vendor_dlkm modules install via AK3's built-in "ak3-helper" systemless module
+# (do.modules=1 + do.systemless=1): KernelSU natively overlays <module>/vendor_dlkm
+# onto /vendor_dlkm, and the helper self-removes if a different kernel is booted.
+ui_print "   vendor_dlkm modules installed systemless (ak3-helper)";
+ui_print "   remove anytime: delete /data/adb/modules/ak3-helper";
 ui_print "   yazhu kernel installed - reboot to apply";
 ## end install
