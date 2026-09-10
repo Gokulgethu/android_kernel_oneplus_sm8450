@@ -789,39 +789,6 @@ index 56ccea07..74906b08 100644
  
  	return 0;
  }
-diff --git a/kernel/kernel_compat.c b/kernel/kernel_compat.c
-index d4ee546d..0e0f5381 100644
---- a/kernel/kernel_compat.c
-+++ b/kernel/kernel_compat.c
-@@ -48,6 +48,16 @@ void ksu_android_ns_fs_check()
- 	task_unlock(current);
- }
- 
-+int access_ok(const void *addr, unsigned long size) {
-+#if LINUX_VERSION_CODE < KERNEL_VERSION(5,0,0)
-+    /* For kernels before 5.0.0, pass the type argument to access_ok. */
-+    return access_ok(VERIFY_READ, addr, size);
-+#else
-+    /* For kernels 5.0.0 and later, ignore the type argument. */
-+    return access_ok(addr, size);
-+#endif
-+}
-+
- struct file *ksu_filp_open_compat(const char *filename, int flags, umode_t mode)
- {
- 	// switch mnt_ns even if current is not wq_worker, to ensure what we open is the correct file in android mnt_ns, rather than user created mnt_ns
-diff --git a/kernel/kernel_compat.h b/kernel/kernel_compat.h
-index 4bcfbf38..5e8e34c5 100644
---- a/kernel/kernel_compat.h
-+++ b/kernel/kernel_compat.h
-@@ -25,6 +25,7 @@ extern long ksu_strncpy_from_user_nofault(char *dst,
- 					  long count);
- 
- extern void ksu_android_ns_fs_check();
-+extern int access_ok(const void *addr, unsigned long size);
- extern struct file *ksu_filp_open_compat(const char *filename, int flags,
- 					 umode_t mode);
- extern ssize_t ksu_kernel_read_compat(struct file *p, void *buf, size_t count,
 diff --git a/kernel/ksu.c b/kernel/ksu.c
 index d517c3b5..621a1d2e 100644
 --- a/kernel/ksu.c

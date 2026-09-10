@@ -18,3 +18,9 @@ susfs patch + headers.
 
 Kernel-side SUSFS (fs/, include/, arch hooks) comes directly from the same
 susfs4ksu branch at the pinned commit — fetched and applied by the workflow.
+
+Fix vs upstream (2026-09-10, run #32 postmortem): dropped the patch's `access_ok`
+extern/definition shim — on arm64 5.10 `access_ok` is a macro (`__range_ok`) and the
+shim broke the build once susfs headers pulled `<linux/uaccess.h>` earlier. All susfs
+`access_ok` call sites live in core_hook.c which already includes uaccess.h, so the
+macro resolves natively.
