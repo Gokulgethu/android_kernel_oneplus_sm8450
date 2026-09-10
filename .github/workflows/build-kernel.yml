@@ -79,11 +79,24 @@ jobs:
           curl -sL https://raw.githubusercontent.com/LineageOS/android_vendor_lineage/lineage-23.2/build/tools/merge_dtbs.py -o /tmp/merge_dtbs.py
           python3 - <<'PY'
           s = open('/tmp/merge_dtbs.py').read()
+          # P1: ufdt_apply_overlay no longer exists as a tool — make validation non-fatal
           old = "cmd = ['ufdt_apply_overlay', base.filename, dtbo.filename, '/dev/null']\n\t\tlogging.debug(' '.join(cmd))\n\t\tsubprocess.run(cmd, check=True)"
           new = "cmd = ['ufdt_apply_overlay', base.filename, dtbo.filename, '/dev/null']\n\t\tlogging.debug(' '.join(cmd))\n\t\ttry:\n\t\t\tsubprocess.run(cmd, check=True)\n\t\texcept Exception as e:\n\t\t\tlogging.warning('ufdt overlay validation skipped: %s' % e)"
-          assert old in s, "anchor not found in merge_dtbs.py"
-          open('/tmp/merge_dtbs.py','w').write(s.replace(old, new))
-          print("merge_dtbs.py patched: ufdt validation non-fatal")
+          assert old in s, "P1 anchor not found"
+          s = s.replace(old, new)
+          # P2: fdtoverlaymerge (removed libufdt tool) — dtc's fdtoverlay handles .dtbo bases fine
+          old = "\t\t\tif ext == '.dtb':\n\t\t\t\tcmd = ['fdtoverlay']\n\t\t\telse:\n\t\t\t\tcmd = ['fdtoverlaymerge']"
+          new = "\t\t\tcmd = ['fdtoverlay']"
+          assert old in s, "P2 anchor not found"
+          s = s.replace(old, new)
+          # P3: uniquify output name on collision instead of asserting (two singleton trees
+          # can resolve to the same basename, e.g. waipio-v2.dtb)
+          old = '\t\tassert not os.path.exists(out_file), "Cannot overwrite: {}".format(out_file)'
+          new = "\t\tif os.path.exists(out_file):\n\t\t\tname = name + '-' + format(abs(hash(self)), 'x')\n\t\t\tout_file = os.path.join(out_dir, name)"
+          assert old in s, "P3 anchor not found"
+          s = s.replace(old, new)
+          open('/tmp/merge_dtbs.py','w').write(s)
+          print("merge_dtbs.py patched: ufdt non-fatal, fdtoverlay for dtbo bases, collision-uniquify")
           PY
 
       - name: Set up Clang (r487747c — AOSP kernel toolchain) + ccache
