@@ -28,7 +28,7 @@ env:
   KSU_VERSION_TAG: v1.0.5
   ARCH: arm64
   # rocko5498 proven config set (matches device tree exactly)
-  DEFCONFIGS: "gki_defconfig vendor/waipio_GKI.config vendor/oplus_GKI.config vendor/debugfs.config vendor/boot_safety.config"
+  DEFCONFIGS: "gki_defconfig vendor/waipio_GKI.config vendor/oplus_GKI.config vendor/debugfs.config vendor/boot_safety.config vendor/integrity.config"
   # rocko5498 proven ext-module set (sm8450-common BoardConfigCommon)
   EXT_MODULES: |
     qcom/opensource/mmrm-driver
@@ -135,6 +135,42 @@ jobs:
           grep -q "kernelsu" drivers/Makefile || echo 'obj-$(CONFIG_KSU) += kernelsu/' >> drivers/Makefile
           grep -q "kernelsu" drivers/Kconfig || echo 'source "drivers/kernelsu/Kconfig"' >> drivers/Kconfig
           echo "KSU files: $(find drivers/kernelsu -type f | wc -l)"
+
+      - name: Install SUSFS (root stays, hidden from integrity probes)
+        working-directory: kernel/oneplus/sm8450
+        run: |
+          set -e
+          SUSFS_COMMIT=1833d53211478a9e44f89eb50785018051e0bd8a   # gki-android12-5.10 HEAD
+          BASE=https://raw.githubusercontent.com/infectedmushi/susfs4ksu/${SUSFS_COMMIT}/kernel_patches
+          # 1) kernel side: fs/ include/ hooks (verified hunk-by-hunk against this tree)
+          curl -sL ${BASE}/50_add_susfs_in_gki-android12-5.10.patch -o /tmp/susfs50.patch
+          patch -p1 --forward -f < /tmp/susfs50.patch
+          curl -sL ${BASE}/fs/susfs.c -o fs/susfs.c
+          curl -sL ${BASE}/fs/sus_su.c -o fs/sus_su.c
+          curl -sL ${BASE}/include/linux/susfs.h -o include/linux/susfs.h
+          curl -sL ${BASE}/include/linux/susfs_def.h -o include/linux/susfs_def.h
+          curl -sL ${BASE}/include/linux/sus_su.h -o include/linux/sus_su.h
+          # 2) KernelSU side: adapted for our pinned v1.0.5 (see patches/README.md)
+          patch -d drivers/kernelsu -p2 --forward -f < patches/ksu-susfs-v105.patch
+          # 3) config fragment: KSU + SUSFS on, sus_su off (5.10 uses kprobe hooks)
+          cat > arch/arm64/configs/vendor/integrity.config <<'EOF'
+          CONFIG_KSU=y
+          CONFIG_KSU_SUSFS=y
+          CONFIG_KSU_SUSFS_HAS_MAGIC_MOUNT=y
+          CONFIG_KSU_SUSFS_SUS_MOUNT=y
+          CONFIG_KSU_SUSFS_AUTO_ADD_SUS_KSU_DEFAULT_MOUNT=y
+          CONFIG_KSU_SUSFS_AUTO_ADD_SUS_BIND_MOUNT=y
+          CONFIG_KSU_SUSFS_SUS_KSTAT=y
+          CONFIG_KSU_SUSFS_TRY_UMOUNT=y
+          CONFIG_KSU_SUSFS_AUTO_ADD_TRY_UMOUNT_FOR_BIND_MOUNT=y
+          CONFIG_KSU_SUSFS_SPOOF_UNAME=y
+          CONFIG_KSU_SUSFS_ENABLE_LOG=y
+          CONFIG_KSU_SUSFS_HIDE_KSU_SUSFS_SYMBOLS=y
+          CONFIG_KSU_SUSFS_SPOOF_CMDLINE_OR_BOOTCONFIG=y
+          CONFIG_KSU_SUSFS_OPEN_REDIRECT=y
+          # CONFIG_KSU_SUSFS_SUS_SU is not set
+          EOF
+          echo "SUSFS layer installed: susfs.c=$(wc -l < fs/susfs.c) lines; KSU patched; fragment written"
 
       - name: Kernel version
         id: version
@@ -309,6 +345,8 @@ jobs:
           unzip -p "${ZIP_NAME}" dtbo.img | grep -aq "Cape MTP, Udon" || { echo "::error::udon board missing from dtbo"; exit 1; }
           # KernelSU must be compiled in
           unzip -p "${ZIP_NAME}" Image | grep -qa "kernelsu" || { echo "::error::KernelSU not found in Image"; exit 1; }
+          # SUSFS hiding layer must be compiled in (root present but hidden)
+          unzip -p "${ZIP_NAME}" Image | grep -qa "susfs" || { echo "::error::SUSFS not found in Image"; exit 1; }
           echo "FINAL: ${ZIP_NAME} ($(du -h ${ZIP_NAME} | cut -f1)) — all validation gates passed"
 
       - name: Upload flashable zip
