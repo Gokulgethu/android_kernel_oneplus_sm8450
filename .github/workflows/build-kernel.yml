@@ -198,7 +198,7 @@ jobs:
             # M relative to kernel src so $(KERNEL_SRC)/$(M) vars resolve
             if ! make -C "$MODS/$m" M="$RPATH/$m" KERNEL_SRC=$ROOT OUT_DIR=$ROOT/out O=$ROOT/out \
                  ARCH=arm64 LLVM=1 LLVM_IAS=1 CLANG_TRIPLE=aarch64-linux-gnu- \
-                 KCFLAGS="-Wno-error=macro-redefined" \
+                 KCFLAGS="-Wno-macro-redefined -Wno-error=macro-redefined" \
                  -j$(nproc) 2>&1 | tail -60; then
               echo "::error::ext module failed: $m"; exit 1
             fi
