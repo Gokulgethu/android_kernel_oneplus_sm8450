@@ -74,6 +74,13 @@ jobs:
           sudo apt-get install -y bc bison cpio flex git kmod libelf-dev libssl-dev lz4 zip unzip \
             device-tree-compiler python3-dev python3-pip lld llvm
           sudo apt-get clean
+          # Lineage dtc tools (fdtget/fdtput/fdtoverlay/fdtoverlaymerge) — merge_dtbs.py needs
+          # fdtoverlaymerge, which stock Ubuntu dtc does not ship; install into /usr/local/bin
+          # so they shadow the distro binaries
+          git clone --depth=1 https://github.com/LineageOS/android_external_dtc /tmp/ldtc
+          make -C /tmp/ldtc fdtoverlaymerge fdtget fdtput fdtoverlay -j$(nproc) CC=gcc EXTRA_CFLAGS="-w"
+          sudo cp /tmp/ldtc/fdtoverlaymerge /tmp/ldtc/fdtget /tmp/ldtc/fdtput /tmp/ldtc/fdtoverlay /usr/local/bin/
+          fdtoverlaymerge 2>&1 | head -1 || true
           # ufdt_apply_overlay (merge_dtbs post-save validation) is no longer shipped as a
           # standalone tool — make that validation non-fatal; merged outputs are already saved
           curl -sL https://raw.githubusercontent.com/LineageOS/android_vendor_lineage/lineage-23.2/build/tools/merge_dtbs.py -o /tmp/merge_dtbs.py
@@ -84,11 +91,6 @@ jobs:
           new = "cmd = ['ufdt_apply_overlay', base.filename, dtbo.filename, '/dev/null']\n\t\tlogging.debug(' '.join(cmd))\n\t\ttry:\n\t\t\tsubprocess.run(cmd, check=True)\n\t\texcept Exception as e:\n\t\t\tlogging.warning('ufdt overlay validation skipped: %s' % e)"
           assert old in s, "P1 anchor not found"
           s = s.replace(old, new)
-          # P2: fdtoverlaymerge (removed libufdt tool) — dtc's fdtoverlay handles .dtbo bases fine
-          old = "\t\t\tif ext == '.dtb':\n\t\t\t\tcmd = ['fdtoverlay']\n\t\t\telse:\n\t\t\t\tcmd = ['fdtoverlaymerge']"
-          new = "\t\t\tif ext == '.dtb':\n\t\t\t\tcmd = ['fdtoverlay']\n\t\t\telse:\n\t\t\t\tlogging.warning('dtbo base: shipping board overlay without techpack merge (no fdtoverlaymerge; overlay-chaining unsupported by dtc)')\n\t\t\t\tcmd = ['cp', self.base, out_file]"
-          assert old in s, "P2 anchor not found"
-          s = s.replace(old, new)
           # P3: uniquify output name on collision instead of asserting (two singleton trees
           # can resolve to the same basename, e.g. waipio-v2.dtb)
           old = '\t\tassert not os.path.exists(out_file), "Cannot overwrite: {}".format(out_file)'
@@ -96,7 +98,7 @@ jobs:
           assert old in s, "P3 anchor not found"
           s = s.replace(old, new)
           open('/tmp/merge_dtbs.py','w').write(s)
-          print("merge_dtbs.py patched: ufdt non-fatal, fdtoverlay for dtbo bases, collision-uniquify")
+          print("merge_dtbs.py patched: ufdt non-fatal, collision-uniquify")
           PY
 
       - name: Set up Clang (r487747c — AOSP kernel toolchain) + ccache
