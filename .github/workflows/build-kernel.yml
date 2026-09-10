@@ -299,9 +299,11 @@ jobs:
           KREL=$(unzip -p "${ZIP_NAME}" Image | strings | grep -m1 -oE '5\.10\.[0-9]+-[A-Za-z0-9.\-]*dirty')
           echo "kernel release: ${KREL}"
           [ -n "${KREL}" ] || { echo "::error::no release string in Image"; exit 1; }
-          M=$(unzip -Z "${ZIP_NAME}" | grep 'vendor_ramdisk/lib/modules/.*\.ko' | head -1)
+          M=$(unzip -Z1 "${ZIP_NAME}" | grep 'vendor_ramdisk/lib/modules/.*\.ko' | head -1)
+          [ -n "${M}" ] || { echo "::error::no ramdisk .ko found"; exit 1; }
           unzip -p "${ZIP_NAME}" "${M}" | strings | grep -q "vermagic=${KREL} " || { echo "::error::vermagic mismatch vs ${KREL}"; exit 1; }
-          M2=$(unzip -Z "${ZIP_NAME}" | grep 'modules/vendor_dlkm/lib/modules/.*\.ko' | head -1)
+          M2=$(unzip -Z1 "${ZIP_NAME}" | grep 'modules/vendor_dlkm/lib/modules/.*\.ko' | head -1)
+          [ -n "${M2}" ] || { echo "::error::no vendor_dlkm .ko found"; exit 1; }
           unzip -p "${ZIP_NAME}" "${M2}" | strings | grep -q "vermagic=${KREL} " || { echo "::error::dlkm vermagic mismatch"; exit 1; }
           # device targeting: udon board must be present in the merged dtbo
           unzip -p "${ZIP_NAME}" dtbo.img | grep -aq "Cape MTP, Udon" || { echo "::error::udon board missing from dtbo"; exit 1; }
