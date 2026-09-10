@@ -194,10 +194,11 @@ jobs:
             echo "=== ext module: $m ==="
             test -f "$MODS/$m/Makefile" || { echo "::error::Makefile not found: $MODS/$m"; exit 1; }
             # Lineage kernel.mk make-external-module-target recipe: build via the module's
-            # wrapper Makefile; M relative to kernel src so $(KERNEL_SRC)/$(M) vars resolve
+            # wrapper Makefile with NO explicit target (default goal = all -> internal modules);
+            # M relative to kernel src so $(KERNEL_SRC)/$(M) vars resolve
             if ! make -C "$MODS/$m" M="$RPATH/$m" KERNEL_SRC=$ROOT OUT_DIR=$ROOT/out O=$ROOT/out \
                  ARCH=arm64 LLVM=1 LLVM_IAS=1 CLANG_TRIPLE=aarch64-linux-gnu- \
-                 -j$(nproc) modules 2>&1 | tail -60; then
+                 -j$(nproc) 2>&1 | tail -60; then
               echo "::error::ext module failed: $m"; exit 1
             fi
           done
