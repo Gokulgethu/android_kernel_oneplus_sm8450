@@ -74,6 +74,11 @@ jobs:
           sudo apt-get install -y bc bison cpio flex git kmod libelf-dev libssl-dev lz4 zip unzip \
             device-tree-compiler python3-dev python3-pip lld llvm
           sudo apt-get clean
+          # ufdt_apply_overlay: required by merge_dtbs.py overlay validation (not packaged in Ubuntu)
+          git clone --depth=1 https://android.googlesource.com/platform/system/libufdt /tmp/libufdt
+          make -C /tmp/libufdt/utils/src CC=gcc -j$(nproc)
+          sudo cp /tmp/libufdt/utils/src/ufdt_apply_overlay /usr/local/bin/
+          ufdt_apply_overlay 2>&1 | head -1 || true
 
       - name: Set up Clang (r487747c — AOSP kernel toolchain) + ccache
         run: |
@@ -198,8 +203,9 @@ jobs:
           make O=out-dtb -j$(nproc) dtbs > /dev/null 2>&1
           DTS=out-dtb/arch/arm64/boot/dts
           mkdir -p dtb-base dtb-out
-          find $DTS -type f -name '*.dtb' | xargs rm -f
-          mv $DTS/vendor/*/*.dtb $DTS/vendor/*/*.dtbo dtb-base/ 2>/dev/null || true
+          # move base blobs (dtb + dtbo) out of vendor — exactly Lineage kernel.mk DTBS_BASE flow;
+          # overlays remaining under $DTS/vendor are picked up by --techpack
+          mv $DTS/vendor/*/*.dtb $DTS/vendor/*/*.dtbo dtb-base/
           curl -sL https://raw.githubusercontent.com/LineageOS/android_vendor_lineage/lineage-23.2/build/tools/merge_dtbs.py -o /tmp/merge_dtbs.py
           python3 /tmp/merge_dtbs.py --base dtb-base --techpack $DTS/vendor --out dtb-out
           # fetch AOSP mkdtboimg.py
