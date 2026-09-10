@@ -111,8 +111,15 @@ jobs:
         run: |
           mkdir -p $HOME/toolchain && cd $HOME/toolchain
           if [ -x bin/clang ]; then echo "toolchain cached"; exit 0; fi
-          curl -sL "https://android.googlesource.com/platform/prebuilts/clang/host/linux-x86/+archive/refs/heads/main-kernel-build-2023/clang-r487747c.tar.gz" -o clang.tar.gz
-          tar tzf clang.tar.gz >/dev/null 2>&1 || { echo "clang tarball corrupt"; exit 1; }
+          URL="https://android.googlesource.com/platform/prebuilts/clang/host/linux-x86/+archive/refs/heads/main-kernel-build-2023/clang-r487747c.tar.gz"
+          ok=0
+          for i in 1 2 3 4 5; do
+            curl -sL --retry 3 --retry-delay 10 -C - "$URL" -o clang.tar.gz || true
+            SZ=$(stat -c%s clang.tar.gz 2>/dev/null || echo 0)
+            if [ "$SZ" -gt 200000000 ] && tar tzf clang.tar.gz >/dev/null 2>&1; then ok=1; break; fi
+            echo "clang download attempt $i failed (size=$SZ), retrying in 15s"; sleep 15
+          done
+          [ "$ok" = 1 ] || { echo "clang download failed after retries"; exit 1; }
           tar xf clang.tar.gz
           [ -x bin/clang ] || { echo "clang binary missing after extract"; ls; exit 1; }
           echo "$HOME/toolchain/bin" >> $GITHUB_PATH
