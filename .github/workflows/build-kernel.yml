@@ -307,8 +307,12 @@ jobs:
           curl -sL --fail -o zygisknext.zip "https://github.com/Dr-TSNG/ZygiskNext/releases/download/v1.5.0/Zygisk-Next-1.5.0-843-5217106-release.zip"
           curl -sL --fail -o playintegrityfork.zip "https://github.com/osm0sis/PlayIntegrityFork/releases/download/v18/PlayIntegrityFork-v18.zip"
           curl -sL --fail -o trickystore.zip "https://github.com/5ec1cff/TrickyStore/releases/download/1.4.1/Tricky-Store-v1.4.1-245-72b2e84-release.zip"
-          for f in *; do unzip -tqq "$f" || exit 1; done
-          echo "stack bundled: $(ls -la | wc -l) files, $(du -sh . | cut -f1)"
+          # verify: zips/APK must be valid zip archives; ksud must be an ELF binary
+          for f in susfs_module.zip zygisknext.zip playintegrityfork.zip trickystore.zip ksu_manager_v1.0.5.apk; do
+            unzip -tqq "$f" || { echo "::error::$f is not a valid zip"; exit 1; }
+          done
+          head -c 4 ksud-aarch64 | od -An -tx1 | grep -q "7f 45 4c 46" || { echo "::error::ksud is not ELF"; exit 1; }
+          echo "stack bundled: $(ls | wc -l) files, $(du -sh . | cut -f1)"
 
       - name: Assemble AnyKernel3 zip (Image + dtb + dtbo + modules + stack)
         run: |
