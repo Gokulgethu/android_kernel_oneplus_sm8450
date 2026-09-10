@@ -75,12 +75,12 @@ jobs:
             device-tree-compiler python3-dev python3-pip lld llvm
           sudo apt-get clean
 
-      - name: Set up Clang (r536225) + ccache
+      - name: Set up Clang (r487747c — AOSP kernel toolchain) + ccache
         run: |
           mkdir -p $HOME/toolchain && cd $HOME/toolchain
-          curl -sL "https://android.googlesource.com/platform/prebuilts/clang/host/linux-x86/+archive/refs/heads/main-kernel-build-2023/clang-r536225.tar.gz" -o clang.tar.gz
+          curl -sL "https://android.googlesource.com/platform/prebuilts/clang/host/linux-x86/+archive/refs/heads/main-kernel-build-2023/clang-r487747c.tar.gz" -o clang.tar.gz
           if ! tar xf clang.tar.gz 2>/dev/null; then
-            curl -sL https://android.googlesource.com/platform/prebuilts/clang/host/linux-x86/+archive/refs/heads/main/clang-r536225.tar.gz -o clang.tar.gz
+            curl -sL https://android.googlesource.com/platform/prebuilts/clang/host/linux-x86/+archive/refs/heads/main/clang-r487747c.tar.gz -o clang.tar.gz
             tar xf clang.tar.gz
           fi
           echo "$HOME/toolchain/bin" >> $GITHUB_PATH
