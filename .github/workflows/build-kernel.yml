@@ -298,7 +298,19 @@ jobs:
           python3 /tmp/mkdtboimg.py dump dtbo.img | grep -E "dt_entry_count|dt_size" | head -4
           ls -la dtbo.img dtb.img
 
-      - name: Assemble AnyKernel3 zip (Image + dtb + dtbo + modules)
+      - name: Bundle integrity stack (ksud + manager APK + 4 KSU modules)
+        run: |
+          mkdir -p stack_stage && cd stack_stage
+          curl -sL --fail -o ksud-aarch64 "https://github.com/tiann/KernelSU/releases/download/v1.0.5/ksud-aarch64-linux-android"
+          curl -sL --fail -o ksu_manager_v1.0.5.apk "https://github.com/tiann/KernelSU/releases/download/v1.0.5/KernelSU_v1.0.5_12081-release.apk"
+          curl -sL --fail -o susfs_module.zip "https://github.com/sidex15/susfs4ksu-module/releases/download/v1.5.2%2B_R28/ksu_module_susfs_1.5.2%2B.zip"
+          curl -sL --fail -o zygisknext.zip "https://github.com/Dr-TSNG/ZygiskNext/releases/download/v1.5.0/Zygisk-Next-1.5.0-843-5217106-release.zip"
+          curl -sL --fail -o playintegrityfork.zip "https://github.com/osm0sis/PlayIntegrityFork/releases/download/v18/PlayIntegrityFork-v18.zip"
+          curl -sL --fail -o trickystore.zip "https://github.com/5ec1cff/TrickyStore/releases/download/1.4.1/Tricky-Store-v1.4.1-245-72b2e84-release.zip"
+          for f in *; do unzip -tqq "$f" || exit 1; done
+          echo "stack bundled: $(ls -la | wc -l) files, $(du -sh . | cut -f1)"
+
+      - name: Assemble AnyKernel3 zip (Image + dtb + dtbo + modules + stack)
         run: |
           K=$PWD/kernel/oneplus/sm8450
           git clone --depth=1 https://github.com/osm0sis/AnyKernel3.git ak3
@@ -312,6 +324,9 @@ jobs:
           cp -r $K/akmods/vendor_dlkm/lib/modules/. ak3/modules/vendor_dlkm/lib/modules/
           mkdir -p ak3/vendor_ramdisk/lib/modules
           cp -r $K/akmods/vendor_ramdisk/lib/modules/. ak3/vendor_ramdisk/lib/modules/
+          # bundled integrity stack → ak3/stack
+          cp -r stack_stage ak3/stack
+          ls -la ak3/stack
           V="${{ steps.version.outputs.version }}"
           ZIP="yazhu-kernel-${V}-udon-$(date +%Y%m%d)-${{ github.run_number }}.zip"
           cd ak3 && zip -r9 "../${ZIP}" . -x '*.git*' > /dev/null && cd ..
@@ -347,6 +362,20 @@ jobs:
           unzip -p "${ZIP_NAME}" Image | grep -qa "kernelsu" || { echo "::error::KernelSU not found in Image"; exit 1; }
           # SUSFS hiding layer must be compiled in (root present but hidden)
           unzip -p "${ZIP_NAME}" Image | grep -qa "susfs" || { echo "::error::SUSFS not found in Image"; exit 1; }
+          # bundled integrity stack must be present and intact
+          unzip -l "${ZIP_NAME}" | grep -q "stack/ksud-aarch64" || { echo "::error::stack/ksud missing"; exit 1; }
+          unzip -l "${ZIP_NAME}" | grep -q "stack/ksu_manager_v1.0.5.apk" || { echo "::error::stack APK missing"; exit 1; }
+          rm -rf /tmp/stk && mkdir -p /tmp/stk
+          unzip -q "${ZIP_NAME}" 'stack/*' -d /tmp/stk
+          for f in susfs_module zygisknext playintegrityfork trickystore; do
+            unzip -p /tmp/stk/stack/$f.zip module.prop | grep -q '^id=' || { echo "::error::stack/$f.zip not a KSU module"; exit 1; }
+          done
+          unzip -p /tmp/stk/stack/susfs_module.zip module.prop | grep -q '^id=susfs4ksu' || { echo "::error::susfs module id mismatch"; exit 1; }
+          unzip -p /tmp/stk/stack/zygisknext.zip module.prop | grep -q '^id=zygisksu' || { echo "::error::zygisksu id mismatch"; exit 1; }
+          unzip -p /tmp/stk/stack/playintegrityfork.zip module.prop | grep -q '^id=playintegrityfix' || { echo "::error::PIF id mismatch"; exit 1; }
+          unzip -p /tmp/stk/stack/trickystore.zip module.prop | grep -q '^id=tricky_store' || { echo "::error::tricky_store id mismatch"; exit 1; }
+          [ "$(stat -c%s /tmp/stk/stack/ksud-aarch64)" -gt 3000000 ] || { echo "::error::ksud binary wrong size"; exit 1; }
+          unzip -p "${ZIP_NAME}" anykernel.sh | grep -q "bundled integrity stack" || { echo "::error::installer v4 (stack logic) missing"; exit 1; }
           echo "FINAL: ${ZIP_NAME} ($(du -h ${ZIP_NAME} | cut -f1)) — all validation gates passed"
 
       - name: Upload flashable zip
