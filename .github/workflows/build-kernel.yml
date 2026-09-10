@@ -207,13 +207,15 @@ jobs:
       - name: Collect modules (vendor_boot ramdisk + vendor_dlkm sets)
         working-directory: kernel/oneplus/sm8450
         run: |
-          K=$PWD; OUT=$K/out; MODS=$(realpath $K/../sm8450-modules)
-          echo "ext-module tree: $MODS"
-          # strip debug info from all built modules
-          find $OUT $MODS -name '*.ko' -exec $HOME/toolchain/bin/llvm-strip --strip-debug {} \; 2>/dev/null || true
+          K=$PWD; OUT=$K/out; KROOT=$(realpath $K/../..)
+          echo "collect search root: $KROOT"
+          # strip debug info from all built modules (in-tree in out/, ext anywhere under kernel/)
+          find $OUT $KROOT -name '*.ko' -exec $HOME/toolchain/bin/llvm-strip --strip-debug {} \; 2>/dev/null || true
           mkdir -p akmods/vendor_ramdisk/lib/modules akmods/vendor_dlkm/lib/modules
-          # index all built .ko by basename
-          find $OUT $MODS -name '*.ko' | while read ko; do echo "$(basename $ko)|$ko"; done > /tmp/ko_index.txt
+          # index all built .ko by basename (search whole kernel/ tree: covers both
+          # sm8450/out and sm8450-modules output locations)
+          find $OUT $KROOT -name '*.ko' | while read ko; do echo "$(basename $ko)|$ko"; done > /tmp/ko_index.txt
+          echo "indexed .ko: $(wc -l < /tmp/ko_index.txt)"
           pick() { # $1=list file, $2=dest
             while read m; do
               hit=$(grep "^$m|" /tmp/ko_index.txt | head -1 | cut -d'|' -f2)
