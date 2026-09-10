@@ -24,3 +24,9 @@ extern/definition shim — on arm64 5.10 `access_ok` is a macro (`__range_ok`) a
 shim broke the build once susfs headers pulled `<linux/uaccess.h>` earlier. All susfs
 `access_ok` call sites live in core_hook.c which already includes uaccess.h, so the
 macro resolves natively.
+
+Fix #2 (run #33 postmortem, LTO link): fs/susfs.c expects the fork's global
+`ksu_try_umount(const char*, bool, int)` — v1.0.5's `try_umount` was static in
+core_hook.c. Now exported as global `ksu_try_umount` (13 call sites migrated),
+and manager.h keeps pristine `is_manager` with a `ksu_is_manager` alias for the
+susfs hunks. sus_su.c's `ksu_escape_to_root` ref is dormant (SUS_SU=n).
